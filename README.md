@@ -667,7 +667,11 @@ Tell the agent to output your chosen string(s) in the prompt, and the orchestrat
 
 The agent process is expected to exit shortly after emitting the completion signal. When a child it spawned — a `gh`/git subprocess, a long-lived MCP server, etc. — inherits the agent's stdout pipe and keeps it open, the parent process can linger long past its logical end. Sandcastle would otherwise wait for the full `idleTimeoutSeconds` and fail with `AgentIdleTimeoutError`, throwing away the commits the agent already made.
 
-Instead, once the completion signal is observed in the output buffer, Sandcastle swaps in a short **completion timeout** (default 60 s). When it expires, the run resolves successfully with a warning that the process was hanging; `result.commits` and `result.completionSignal` are populated as if the process had exited cleanly. The timer resets on every subsequent output line, so trailing data emitted after the signal — token-usage events, terminal `result` events, a structured-output `<tag>` — is still captured.
+Instead, once the completion signal is observed in the output buffer, Sandcastle swaps in a short **completion timeout** (default 60 s). When it expires, Sandcastle requests termination and waits for confirmation before returning buffered output or collecting commits. The timer resets on every subsequent output line, so trailing token-usage events, terminal `result` events, and structured-output tags are still captured.
+
+On macOS/Linux, `noSandbox()` gives each exec invocation its own process group. Cancellation sends SIGTERM, escalates to SIGKILL after 500 ms if needed, and checks that the group has exited. `close()` also stops outstanding exec invocations. A shell exiting while a background child has redirected its stdio does not leave that child running. Deliberately escaping the invocation's process group is outside this provider's cancellation contract.
+
+Provider handles opt into this contract with `supportsExecCancellation: true` and implement `ExecOptions.signal`. Sandcastle waits up to 7 seconds for cancellation to settle. An unsupported provider, an unconfirmed stop, or a failed sandbox shutdown raises `ExecutionTerminationError`; affected worktrees are preserved. Completion grace cannot turn an unknown termination state into success. Other built-in providers have not opted in yet; Windows uses best-effort `taskkill /T /F` and does not claim confirmed cancellation.
 
 A clean process exit always wins the race, so healthy runs gain zero added latency. The completion timeout only matters when the process hangs.
 
@@ -680,7 +684,7 @@ await run({
 });
 ```
 
-This is independent of `idleTimeoutSeconds`. They cover different phases: `idleTimeoutSeconds` runs **before** any signal is seen (genuinely stuck agent → fail); `completionTimeoutSeconds` runs **after** the signal is seen (hanging process → succeed with warning). See [ADR 0019](docs/adr/0019-completion-timeout-for-hanging-process.md).
+This is independent of `idleTimeoutSeconds`. Before a completion signal, idle expiry terminates execution and fails the run. After the signal, completion grace can return buffered output once termination is confirmed. See [ADR 0019](docs/adr/0019-completion-timeout-for-hanging-process.md).
 
 ### Structured output
 

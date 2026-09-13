@@ -56,6 +56,8 @@ import {
 } from "./PromptArgumentSubstitution.js";
 import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
+import { getExecutionTerminationError } from "./executionError.js";
+import { ExecutionTerminationError } from "./processTermination.js";
 import type { Timeouts } from "./run.js";
 
 /** Branch strategies valid for createWorktree — head is excluded. */
@@ -256,8 +258,10 @@ export const createWorktree = async (
   }).pipe(Effect.provide(NodeContext.layer), Effect.runPromise);
 
   let closed = false;
+  let preserveWorktree = false;
 
   const close = async (): Promise<CloseResult> => {
+    if (preserveWorktree) return { preservedWorktreePath: worktreeInfo.path };
     if (closed) return { preservedWorktreePath: undefined };
     closed = true;
 
@@ -469,7 +473,18 @@ export const createWorktree = async (
         } satisfies InteractiveResult;
       }).pipe(
         // Always close sandbox handle
-        Effect.ensuring(Effect.promise(() => handle.close().catch(() => {}))),
+        Effect.ensuring(
+          Effect.promise(async () => {
+            try {
+              await handle.close();
+            } catch (cause) {
+              throw new ExecutionTerminationError(
+                `Sandbox shutdown failed: ${String(cause)}`,
+                { cause },
+              );
+            }
+          }),
+        ),
       );
     });
 
@@ -483,6 +498,11 @@ export const createWorktree = async (
       );
     } catch (error: unknown) {
       // If the signal was aborted, surface its reason verbatim (no wrapping)
+      const termination = getExecutionTerminationError(error);
+      if (termination) {
+        preserveWorktree = true;
+        throw termination;
+      }
       opts.signal?.throwIfAborted();
       throw error;
     }
@@ -705,7 +725,18 @@ export const createWorktree = async (
       }).pipe(
         Effect.provide(runLayer),
         // Always close sandbox handle
-        Effect.ensuring(Effect.promise(() => handle.close().catch(() => {}))),
+        Effect.ensuring(
+          Effect.promise(async () => {
+            try {
+              await handle.close();
+            } catch (cause) {
+              throw new ExecutionTerminationError(
+                `Sandbox shutdown failed: ${String(cause)}`,
+                { cause },
+              );
+            }
+          }),
+        ),
       );
 
       return {
@@ -728,7 +759,12 @@ export const createWorktree = async (
         ),
       );
     } catch (error: unknown) {
-      // If the signal was aborted, surface its reason verbatim (no wrapping)
+      // A termination failure takes precedence over the caller's abort reason.
+      const termination = getExecutionTerminationError(error);
+      if (termination) {
+        preserveWorktree = true;
+        throw termination;
+      }
       opts.signal?.throwIfAborted();
       throw error;
     }
@@ -738,6 +774,9 @@ export const createWorktree = async (
     opts: WorktreeCreateSandboxOptions,
   ): Promise<Sandbox> => {
     return createSandboxFromWorktree({
+      onPreserveWorktree: () => {
+        preserveWorktree = true;
+      },
       branch: worktreeInfo.branch,
       worktreePath: worktreeInfo.path,
       hostRepoDir,

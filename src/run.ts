@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path, { join } from "node:path";
 import { styleText } from "node:util";
 import { Effect, Layer } from "effect";
+import { getExecutionTerminationError } from "./executionError.js";
 import { resolveCwd } from "./resolveCwd.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
 import type { AgentProvider } from "./AgentProvider.js";
@@ -793,6 +794,9 @@ export async function run(
       withErrorLog.pipe(Effect.provide(runLayer)),
     );
   } catch (error: unknown) {
+    // A cancellation reason must not hide failure to stop the execution.
+    const termination = getExecutionTerminationError(error);
+    if (termination) throw termination;
     // If the signal was aborted, surface its reason verbatim (no wrapping)
     options.signal?.throwIfAborted();
     throw error;

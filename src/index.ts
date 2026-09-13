@@ -1,4 +1,6 @@
 export { run } from "./run.js";
+export { ExecutionTerminationError } from "./processTermination.js";
+export type { ExecOptions } from "./SandboxProvider.js";
 export type {
   RunOptions,
   RunResult,

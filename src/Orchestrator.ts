@@ -231,6 +231,7 @@ const invokeAgent = (
     }
 
     return yield* raced.pipe(
+      Effect.ensuring(sandbox.assertExecStopped?.() ?? Effect.void),
       Effect.ensuring(
         Effect.sync(() => {
           abortCleanup?.();
@@ -261,8 +262,8 @@ export interface OrchestrateOptions {
    * Grace window in seconds after a completion signal is observed in the
    * agent's output. The agent process is expected to exit shortly after
    * emitting the signal; if it does not (because a spawned child is keeping
-   * stdout open — see ADR 0019), this timer fires and the iteration resolves
-   * successfully with the buffered output. Resets on every subsequent output
+   * stdout open — see ADR 0019), this timer requests termination. Only after
+   * confirmed termination can the iteration return buffered output. Resets on every subsequent output
    * line, so trailing data (token-usage events, terminal `result` events,
    * structured-output tags) is still captured. Default: 60 seconds.
    */

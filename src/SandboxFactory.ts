@@ -1,4 +1,4 @@
-import { Context, Effect, Exit, Layer } from "effect";
+import { Cause, Context, Effect, Exit, Layer } from "effect";
 import { FileSystem } from "@effect/platform";
 import { join, resolve } from "node:path";
 import type { PlatformError } from "@effect/platform/Error";
@@ -23,7 +23,9 @@ import type {
   BindMountSandboxHandle,
   IsolatedSandboxHandle,
   NoSandboxHandle,
+  ExecOptions,
 } from "./SandboxProvider.js";
+import { ExecutionTerminationError } from "./processTermination.js";
 import { runHostHooks, type SandboxHooks } from "./SandboxLifecycle.js";
 import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
@@ -36,14 +38,11 @@ export interface ExecResult {
 }
 
 export interface SandboxService {
+  /** A race may discard its losing fiber's failure; verify termination outside it. */
+  readonly assertExecStopped?: () => Effect.Effect<void>;
   readonly exec: (
     command: string,
-    options?: {
-      onLine?: (line: string) => void;
-      cwd?: string;
-      sudo?: boolean;
-      stdin?: string;
-    },
+    options?: ExecOptions,
   ) => Effect.Effect<ExecResult, ExecError>;
 
   /** Copy a file or directory from the host into the sandbox. */
@@ -98,37 +97,107 @@ const getCopyIn = (
  */
 export const makeSandboxFromHandle = (
   handle: BindMountSandboxHandle | IsolatedSandboxHandle | NoSandboxHandle,
-): SandboxService => ({
-  exec: (command, options) =>
-    Effect.tryPromise({
-      try: () => handle.exec(command, options),
-      catch: (e) =>
-        new ExecError({
-          command,
-          message: `exec failed: ${e instanceof Error ? e.message : String(e)}`,
-        }),
-    }),
-  copyIn: getCopyIn(handle),
-  copyFileOut:
-    "copyFileOut" in handle
-      ? (sandboxPath, hostPath) =>
-          Effect.tryPromise({
-            try: () =>
-              (
-                handle as IsolatedSandboxHandle | BindMountSandboxHandle
-              ).copyFileOut(sandboxPath, hostPath),
-            catch: (e) =>
-              new CopyError({
-                message: `copyFileOut failed: ${e instanceof Error ? e.message : String(e)}`,
+): SandboxService => {
+  let terminationError: ExecutionTerminationError | undefined;
+  return {
+    assertExecStopped: () =>
+      Effect.suspend(() =>
+        terminationError ? Effect.die(terminationError) : Effect.void,
+      ),
+    exec: (command, options) =>
+      Effect.async<ExecResult, ExecError>((resume) => {
+        const abort = new AbortController();
+        const signal = options?.signal
+          ? AbortSignal.any([abort.signal, options.signal])
+          : abort.signal;
+        let settled = false;
+        const execution = Promise.resolve().then(() =>
+          handle.exec(command, { ...options, signal }),
+        );
+        execution.then(
+          (result) => {
+            settled = true;
+            resume(Effect.succeed(result));
+          },
+          (error) => {
+            settled = true;
+            if (error instanceof ExecutionTerminationError)
+              terminationError = error;
+            resume(
+              error instanceof ExecutionTerminationError
+                ? Effect.die(error)
+                : Effect.fail(
+                    new ExecError({
+                      command,
+                      message: `exec failed: ${String(error)}`,
+                    }),
+                  ),
+            );
+          },
+        );
+        // Effect interruption alone does not cancel a Promise. The async
+        // finalizer must stop the invocation and await its settlement.
+        return Effect.promise(async () => {
+          if (settled) return;
+          abort.abort(new DOMException("Invocation cancelled", "AbortError"));
+          if (!handle.supportsExecCancellation) {
+            terminationError = new ExecutionTerminationError(
+              "Provider does not support confirmed exec cancellation",
+            );
+            throw terminationError;
+          }
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              execution.catch((error) => {
+                if (error instanceof ExecutionTerminationError) throw error;
               }),
-          })
-      : () =>
-          Effect.fail(
-            new CopyError({
-              message: "copyFileOut is not supported for this sandbox provider",
-            }),
-          ),
-});
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () =>
+                    reject(
+                      new ExecutionTerminationError(
+                        "Provider did not confirm termination within 7 seconds",
+                      ),
+                    ),
+                  7000,
+                );
+              }),
+            ]);
+          } catch (error) {
+            terminationError =
+              error instanceof ExecutionTerminationError
+                ? error
+                : new ExecutionTerminationError(String(error));
+            throw terminationError;
+          } finally {
+            clearTimeout(timer);
+          }
+        });
+      }),
+    copyIn: getCopyIn(handle),
+    copyFileOut:
+      "copyFileOut" in handle
+        ? (sandboxPath, hostPath) =>
+            Effect.tryPromise({
+              try: () =>
+                (
+                  handle as IsolatedSandboxHandle | BindMountSandboxHandle
+                ).copyFileOut(sandboxPath, hostPath),
+              catch: (e) =>
+                new CopyError({
+                  message: `copyFileOut failed: ${e instanceof Error ? e.message : String(e)}`,
+                }),
+            })
+        : () =>
+            Effect.fail(
+              new CopyError({
+                message:
+                  "copyFileOut is not supported for this sandbox provider",
+              }),
+            ),
+  };
+};
 
 /** The mount point inside the sandbox where the project worktree is bound. */
 export const SANDBOX_REPO_DIR = "/home/agent/workspace";
@@ -203,8 +272,20 @@ const printWorktreePreservedMessage = (
 const cleanupWorktree = (
   worktreePath: string,
   exit: Exit.Exit<unknown, unknown>,
-): Effect.Effect<string | undefined, WorktreeError> =>
-  WorktreeManager.hasUncommittedChanges(worktreePath).pipe(
+): Effect.Effect<string | undefined, WorktreeError> => {
+  if (
+    Exit.isFailure(exit) &&
+    Array.from(Cause.defects(exit.cause)).some(
+      (error) => error instanceof ExecutionTerminationError,
+    )
+  ) {
+    printWorktreePreservedMessage(
+      worktreePath,
+      `Termination is unconfirmed; worktree preserved at ${worktreePath}`,
+    );
+    return Effect.succeed(worktreePath);
+  }
+  return WorktreeManager.hasUncommittedChanges(worktreePath).pipe(
     Effect.catchAll(() => Effect.succeed(false)),
     Effect.flatMap((isDirty) => {
       if (isDirty) {
@@ -224,6 +305,7 @@ const cleanupWorktree = (
       );
     }),
   );
+};
 
 /**
  * Attach the preserved worktree path to AgentIdleTimeoutError and AgentError so
@@ -373,7 +455,11 @@ export const WorktreeDockerSandboxFactory = {
                     ({ handle }) =>
                       Effect.tryPromise({
                         try: () => handle.close(),
-                        catch: () => undefined,
+                        catch: (cause) =>
+                          new ExecutionTerminationError(
+                            `Sandbox shutdown failed: ${String(cause)}`,
+                            { cause },
+                          ),
                       }).pipe(Effect.orDie),
                   ).pipe(
                     Effect.map((value) => ({
@@ -432,7 +518,11 @@ export const WorktreeDockerSandboxFactory = {
                       ({ handle }) =>
                         Effect.tryPromise({
                           try: () => handle.close(),
-                          catch: () => undefined,
+                          catch: (cause) =>
+                            new ExecutionTerminationError(
+                              `Sandbox shutdown failed: ${String(cause)}`,
+                              { cause },
+                            ),
                         }).pipe(Effect.orDie),
                     ),
                   ),
@@ -498,7 +588,11 @@ export const WorktreeDockerSandboxFactory = {
                       ({ handle }) =>
                         Effect.tryPromise({
                           try: () => handle.close(),
-                          catch: () => undefined,
+                          catch: (cause) =>
+                            new ExecutionTerminationError(
+                              `Sandbox shutdown failed: ${String(cause)}`,
+                              { cause },
+                            ),
                         }).pipe(Effect.orDie),
                     ),
                   ),
@@ -570,7 +664,11 @@ export const WorktreeDockerSandboxFactory = {
                   ({ handle }) =>
                     Effect.tryPromise({
                       try: () => handle.close(),
-                      catch: () => undefined,
+                      catch: (cause) =>
+                        new ExecutionTerminationError(
+                          `Sandbox shutdown failed: ${String(cause)}`,
+                          { cause },
+                        ),
                     }).pipe(Effect.orDie),
                 ).pipe(
                   Effect.map((value) => ({
@@ -661,7 +759,11 @@ export const WorktreeDockerSandboxFactory = {
                     ({ handle }) =>
                       Effect.tryPromise({
                         try: () => handle.close(),
-                        catch: () => undefined,
+                        catch: (cause) =>
+                          new ExecutionTerminationError(
+                            `Sandbox shutdown failed: ${String(cause)}`,
+                            { cause },
+                          ),
                       }).pipe(Effect.orDie),
                   ),
                 ),

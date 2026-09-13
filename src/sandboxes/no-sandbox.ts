@@ -18,8 +18,13 @@ import type {
   NoSandboxHandle,
   ExecResult,
   InteractiveExecOptions,
+  ExecOptions,
 } from "../SandboxProvider.js";
 import { BoundedTail, MAX_TAIL_CHARS } from "../boundedTail.js";
+import {
+  ExecutionTerminationError,
+  terminateProcessGroup,
+} from "../processTermination.js";
 
 export interface NoSandboxOptions {
   /** Environment variables injected by this provider. Merged at launch time. */
@@ -50,19 +55,23 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
     const worktreePath = createOptions.worktreePath;
     const processEnv = { ...process.env, ...createOptions.env };
     const maxOutputTailChars = options?.maxOutputTailChars ?? MAX_TAIL_CHARS;
+    const active = new Map<AbortController, Promise<ExecResult>>();
+    let closed = false;
 
     const handle: NoSandboxHandle = {
       worktreePath,
+      supportsExecCancellation: process.platform !== "win32",
 
-      exec: (
-        command: string,
-        opts?: {
-          onLine?: (line: string) => void;
-          cwd?: string;
-          sudo?: boolean;
-          stdin?: string;
-        },
-      ): Promise<ExecResult> => {
+      exec: (command: string, opts?: ExecOptions): Promise<ExecResult> => {
+        if (closed) return Promise.reject(new Error("Sandbox closed"));
+        if (opts?.signal?.aborted) return Promise.reject(opts.signal.reason);
+        const abort = new AbortController();
+        opts = {
+          ...opts,
+          signal: opts?.signal
+            ? AbortSignal.any([opts.signal, abort.signal])
+            : abort.signal,
+        };
         // sudo is a no-op for no-sandbox — the user is already on the host
         const cwd = opts?.cwd ?? worktreePath;
         const isWindows = process.platform === "win32";
@@ -75,7 +84,7 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
           ? ["/d", "/s", "/c", command]
           : ["-c", command];
 
-        return new Promise((resolve, reject) => {
+        const execution = new Promise<ExecResult>((resolve, reject) => {
           const proc = spawn(shellCmd, shellArgs, {
             cwd,
             env: processEnv,
@@ -85,7 +94,34 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
               "pipe",
             ],
             windowsVerbatimArguments: isWindows,
+            detached: !isWindows,
           });
+
+          let stopping: Promise<void> | undefined;
+          const onAbort = () => {
+            if (proc.pid === undefined || stopping) return;
+            stopping = terminateProcessGroup(proc.pid);
+            // Report failure without creating an unhandled rejection while
+            // stdio close is pending. A successful stop still waits for close.
+            stopping.catch(reject);
+          };
+          opts?.signal?.addEventListener("abort", onAbort, { once: true });
+          if (opts?.signal?.aborted) onAbort();
+          const finish = async (result: ExecResult) => {
+            opts?.signal?.removeEventListener("abort", onAbort);
+            try {
+              await stopping;
+              // A parent may exit after redirecting a background child's
+              // stdio. EOF then proves nothing about the rest of its group.
+              if (!stopping && proc.pid !== undefined && !isWindows) {
+                await terminateProcessGroup(proc.pid);
+              }
+              if (stopping) reject(opts?.signal?.reason);
+              else resolve(result);
+            } catch (error) {
+              reject(error);
+            }
+          };
 
           if (opts?.stdin !== undefined) {
             proc.stdin!.write(opts.stdin);
@@ -93,6 +129,7 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
           }
 
           proc.on("error", (error) => {
+            opts?.signal?.removeEventListener("abort", onAbort);
             reject(new Error(`exec failed: ${error.message}`));
           });
 
@@ -109,10 +146,10 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
               stderrTail.push(chunk.toString());
             });
             proc.on("close", (code) => {
-              resolve({
+              void finish({
                 stdout: stdoutTail.toString(),
                 stderr: stderrTail.toString(),
-                exitCode: code ?? 0,
+                exitCode: code ?? 128,
               });
             });
           } else {
@@ -125,14 +162,17 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
               stderrChunks.push(chunk.toString());
             });
             proc.on("close", (code) => {
-              resolve({
+              void finish({
                 stdout: stdoutChunks.join(""),
                 stderr: stderrChunks.join(""),
-                exitCode: code ?? 0,
+                exitCode: code ?? 128,
               });
             });
           }
         });
+        active.set(abort, execution);
+        void execution.finally(() => active.delete(abort)).catch(() => {});
+        return execution;
       },
 
       interactiveExec: (
@@ -162,7 +202,17 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
       },
 
       close: async (): Promise<void> => {
-        // No-op — no container to tear down
+        closed = true;
+        const executions = [...active.values()];
+        for (const abort of active.keys())
+          abort.abort(new Error("Sandbox closed"));
+        await Promise.all(
+          executions.map((execution) =>
+            execution.catch((error) => {
+              if (error instanceof ExecutionTerminationError) throw error;
+            }),
+          ),
+        );
       },
     };
 

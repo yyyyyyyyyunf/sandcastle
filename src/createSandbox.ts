@@ -59,6 +59,7 @@ import { resolveCwd } from "./resolveCwd.js";
 import { patchGitMountsForWindows } from "./mountUtils.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
 import { registerShutdown } from "./shutdownRegistry.js";
+import { getExecutionTerminationError } from "./executionError.js";
 
 export interface CreateSandboxOptions {
   /** Explicit branch for the worktree (required). */
@@ -264,6 +265,7 @@ export interface SandboxExecOptions {
 
 /** @internal Context for building Sandbox handle methods. */
 interface SandboxHandleContext {
+  readonly onPreserveWorktree?: () => void;
   readonly branch: string;
   readonly worktreePath: string;
   readonly hostRepoDir: string;
@@ -496,6 +498,11 @@ const buildSandboxHandle = (
         );
       } catch (error: unknown) {
         // If the signal was aborted, surface its reason verbatim
+        const termination = getExecutionTerminationError(error);
+        if (termination) {
+          ctx.onPreserveWorktree?.();
+          throw termination;
+        }
         runOptions.signal?.throwIfAborted();
         throw error;
       }
@@ -706,6 +713,7 @@ const buildSandboxHandle = (
 
 /** @internal Options for createSandboxFromWorktree — used by worktree.createSandbox(). */
 export interface CreateSandboxFromWorktreeOptions {
+  readonly onPreserveWorktree?: () => void;
   readonly branch: string;
   readonly worktreePath: string;
   readonly hostRepoDir: string;
@@ -886,6 +894,7 @@ export const createSandboxFromWorktree = async (
       applyToHost,
       timeouts: options.timeouts,
       branchStrategy: options.branchStrategy,
+      onPreserveWorktree: options.onPreserveWorktree,
     },
     async () => {
       if (closed) return { preservedWorktreePath: undefined };
@@ -1089,6 +1098,12 @@ export const createSandbox = async (
         if (providerHandle) {
           yield* Effect.promise(() => providerHandle.close());
         }
+
+        const termination = yield* Effect.exit(
+          sandbox.assertExecStopped?.() ?? Effect.void,
+        );
+        if (termination._tag === "Failure")
+          return { preservedWorktreePath: worktreePath };
 
         // Preserve the worktree when it has uncommitted changes; otherwise remove it.
         const isDirty = yield* WorktreeManager.hasUncommittedChanges(

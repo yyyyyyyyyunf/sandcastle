@@ -12,6 +12,16 @@ export interface ExecResult {
   readonly exitCode: number;
 }
 
+/** Options shared by all Promise-based sandbox command handles. */
+export interface ExecOptions {
+  onLine?: (line: string) => void;
+  cwd?: string;
+  sudo?: boolean;
+  stdin?: string;
+  /** Abort must settle exec only after this invocation has stopped. */
+  signal?: AbortSignal;
+}
+
 /** Options for interactiveExec — the streams the provider should wire to the spawned process. */
 export interface InteractiveExecOptions {
   readonly stdin: NodeJS.ReadableStream;
@@ -22,6 +32,8 @@ export interface InteractiveExecOptions {
 
 /** Handle to a running bind-mount sandbox. */
 export interface BindMountSandboxHandle {
+  /** Opt in only if abort waits for confirmed invocation termination. */
+  readonly supportsExecCancellation?: boolean;
   /** Absolute path to the worktree inside the sandbox. */
   readonly worktreePath: string;
   /**
@@ -36,15 +48,7 @@ export interface BindMountSandboxHandle {
    * When `stdin` is set, the implementation pipes the string to the child
    * process's stdin and closes it. This avoids the Linux 128 KB per-arg limit.
    */
-  exec(
-    command: string,
-    options?: {
-      onLine?: (line: string) => void;
-      cwd?: string;
-      sudo?: boolean;
-      stdin?: string;
-    },
-  ): Promise<ExecResult>;
+  exec(command: string, options?: ExecOptions): Promise<ExecResult>;
   /**
    * Launch an interactive process inside the sandbox.
    * Optional — providers that support interactive sessions implement this.
@@ -99,6 +103,8 @@ export interface BindMountSandboxProviderConfig {
 
 /** Handle to a running isolated sandbox (extends bind-mount with file transfer). */
 export interface IsolatedSandboxHandle {
+  /** Opt in only if abort waits for confirmed invocation termination. */
+  readonly supportsExecCancellation?: boolean;
   /** Absolute path to the worktree inside the sandbox. */
   readonly worktreePath: string;
   /**
@@ -113,15 +119,7 @@ export interface IsolatedSandboxHandle {
    * When `stdin` is set, the implementation pipes the string to the child
    * process's stdin and closes it. This avoids the Linux 128 KB per-arg limit.
    */
-  exec(
-    command: string,
-    options?: {
-      onLine?: (line: string) => void;
-      cwd?: string;
-      sudo?: boolean;
-      stdin?: string;
-    },
-  ): Promise<ExecResult>;
+  exec(command: string, options?: ExecOptions): Promise<ExecResult>;
   /**
    * Launch an interactive process inside the sandbox.
    * Optional — providers that support interactive sessions implement this.
@@ -193,6 +191,8 @@ export interface IsolatedSandboxProvider {
 
 /** Handle to a no-sandbox session — runs commands directly on the host. */
 export interface NoSandboxHandle {
+  /** Opt in only if abort waits for confirmed invocation termination. */
+  readonly supportsExecCancellation?: boolean;
   /** Absolute path to the worktree on the host. */
   readonly worktreePath: string;
   /**
@@ -205,15 +205,7 @@ export interface NoSandboxHandle {
    * When `stdin` is set, the implementation pipes the string to the child
    * process's stdin and closes it. This avoids the Linux 128 KB per-arg limit.
    */
-  exec(
-    command: string,
-    options?: {
-      onLine?: (line: string) => void;
-      cwd?: string;
-      sudo?: boolean;
-      stdin?: string;
-    },
-  ): Promise<ExecResult>;
+  exec(command: string, options?: ExecOptions): Promise<ExecResult>;
   /**
    * Launch an interactive process on the host with inherited stdio.
    */
@@ -221,7 +213,7 @@ export interface NoSandboxHandle {
     args: string[],
     options: InteractiveExecOptions,
   ): Promise<{ exitCode: number }>;
-  /** No-op — no container to tear down. */
+  /** Stop outstanding exec invocations and wait for termination. */
   close(): Promise<void>;
 }
 

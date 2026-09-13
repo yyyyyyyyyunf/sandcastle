@@ -381,6 +381,7 @@ export const withSandboxLifecycle = <A>(
 
     // Run the caller's work
     const result = yield* work({ sandbox, sandboxRepoDir, baseHead });
+    yield* sandbox.assertExecStopped?.() ?? Effect.void;
 
     // Sync changes from sandbox to host worktree (isolated sandbox only).
     // The count resolves the base from the same sandbox-owned ref `syncOut`
@@ -541,4 +542,4 @@ export const withSandboxLifecycle = <A>(
     }
 
     return { result, branch: finalBranch, commits };
-  });
+  }).pipe(Effect.ensuring(sandbox.assertExecStopped?.() ?? Effect.void));
