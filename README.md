@@ -6,6 +6,8 @@
   </picture>
 </div>
 
+This is the `@fly4ai/sandcastle` fork of [Matt Pocock’s Sandcastle](https://github.com/mattpocock/sandcastle), maintained at [yyyyyyyyyunf/sandcastle](https://github.com/yyyyyyyyyunf/sandcastle). It includes the verified native AFK workflow and uses a separate npm scope.
+
 ## What Is Sandcastle?
 
 A TypeScript library for orchestrating AI coding agents in isolated sandboxes:
@@ -30,13 +32,13 @@ Sandcastle is provider-agnostic — it ships with built-in providers for Docker,
 1. Install the package:
 
 ```bash
-npm install --save-dev @ai-hero/sandcastle
+npm install --save-dev @fly4ai/sandcastle
 ```
 
-2. Run `npx @ai-hero/sandcastle init`. This scaffolds a `.sandcastle` directory with all the files needed.
+2. Run `npx @fly4ai/sandcastle init`. This scaffolds a `.sandcastle` directory with all the files needed.
 
 ```bash
-npx @ai-hero/sandcastle init
+npx @fly4ai/sandcastle init
 ```
 
 3. Edit `.sandcastle/.env` and fill in your default values for `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token` on your host to get one). To use an Anthropic API key instead, uncomment and fill in `ANTHROPIC_API_KEY`.
@@ -53,8 +55,8 @@ npx tsx .sandcastle/main.ts
 
 ```typescript
 // 3. Run the agent via the JS API
-import { run, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { run, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 await run({
   agent: claudeCode("claude-opus-4-8"),
@@ -67,20 +69,20 @@ await run({
 
 Sandcastle uses a `SandboxProvider` to create isolated environments. The `sandbox` option on `run()`, `interactive()`, and `createSandbox()` accepts any provider, including `noSandbox()` — opt in to running the agent directly on the host when container isolation is undesired. Built-in providers:
 
-| Provider   | Import path                                | Type       | Accepted by                                 |
-| ---------- | ------------------------------------------ | ---------- | ------------------------------------------- |
-| Docker     | `@ai-hero/sandcastle/sandboxes/docker`     | Bind-mount | `run()`, `createSandbox()`, `interactive()` |
-| Podman     | `@ai-hero/sandcastle/sandboxes/podman`     | Bind-mount | `run()`, `createSandbox()`, `interactive()` |
-| Vercel     | `@ai-hero/sandcastle/sandboxes/vercel`     | Isolated   | `run()`, `createSandbox()`, `interactive()` |
-| No-sandbox | `@ai-hero/sandcastle/sandboxes/no-sandbox` | None       | `run()`, `createSandbox()`, `interactive()` |
+| Provider   | Import path                               | Type       | Accepted by                                 |
+| ---------- | ----------------------------------------- | ---------- | ------------------------------------------- |
+| Docker     | `@fly4ai/sandcastle/sandboxes/docker`     | Bind-mount | `run()`, `createSandbox()`, `interactive()` |
+| Podman     | `@fly4ai/sandcastle/sandboxes/podman`     | Bind-mount | `run()`, `createSandbox()`, `interactive()` |
+| Vercel     | `@fly4ai/sandcastle/sandboxes/vercel`     | Isolated   | `run()`, `createSandbox()`, `interactive()` |
+| No-sandbox | `@fly4ai/sandcastle/sandboxes/no-sandbox` | None       | `run()`, `createSandbox()`, `interactive()` |
 
 Worktree methods (`wt.run()`, `wt.interactive()`, `wt.createSandbox()`) accept the same providers as their top-level counterparts. `wt.interactive()` defaults to `noSandbox()` when no sandbox is specified.
 
 ```typescript
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
-import { vercel } from "@ai-hero/sandcastle/sandboxes/vercel";
-import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
+import { podman } from "@fly4ai/sandcastle/sandboxes/podman";
+import { vercel } from "@fly4ai/sandcastle/sandboxes/vercel";
+import { noSandbox } from "@fly4ai/sandcastle/sandboxes/no-sandbox";
 
 // Docker, Podman, and Vercel are interchangeable in run() and createSandbox():
 await run({
@@ -106,8 +108,8 @@ You can also [create your own provider](#custom-sandbox-providers) using `create
 Sandcastle exports a programmatic `run()` function for use in scripts, CI pipelines, or custom tooling. The examples below use `docker()`, but any `SandboxProvider` works in its place.
 
 ```typescript
-import { run, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { run, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 const result = await run({
   agent: claudeCode("claude-opus-4-8"),
@@ -124,8 +126,8 @@ console.log(result.branch); // target branch name
 ### All options
 
 ```typescript
-import { run, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { run, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 const result = await run({
   // Agent provider — required. Pass a model string to claudeCode().
@@ -267,8 +269,8 @@ Use `run()` instead when you only need a single one-shot invocation — it handl
 #### Basic single-run usage
 
 ```typescript
-import { createSandbox, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { createSandbox, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 await using sandbox = await createSandbox({
   branch: "agent/fix-42",
@@ -286,8 +288,8 @@ console.log(result.commits); // [{ sha: "abc123" }]
 #### Multi-run implement-then-review
 
 ```typescript
-import { createSandbox, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { createSandbox, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 await using sandbox = await createSandbox({
   branch: "agent/fix-42",
@@ -430,7 +432,7 @@ Only `branch` and `merge-to-head` strategies are accepted; `head` is a compile-t
 Pass `cwd` to target a repo other than `process.cwd()`. Relative paths resolve against `process.cwd()`; absolute paths pass through. A `CwdError` is thrown if the path does not exist or is not a directory.
 
 ```typescript
-import { createWorktree } from "@ai-hero/sandcastle";
+import { createWorktree } from "@fly4ai/sandcastle";
 
 await using wt = await createWorktree({
   branchStrategy: { type: "branch", branch: "agent/fix-42" },
@@ -457,7 +459,7 @@ const result = await wt.run({
 console.log(result.commits); // commits made during the run
 
 // Create a long-lived sandbox from the worktree
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 await using sandbox = await wt.createSandbox({
   sandbox: docker(),
@@ -609,7 +611,7 @@ If any command exits with a non-zero code, the run fails immediately with an err
 Use `{{KEY}}` placeholders in your prompt to inject values from the `promptArgs` option. This is useful for reusing the same prompt file across multiple runs with different parameters.
 
 ```typescript
-import { run } from "@ai-hero/sandcastle";
+import { run } from "@fly4ai/sandcastle";
 
 await run({
   promptFile: "./my-prompt.md",
@@ -730,7 +732,7 @@ Only the accepted SHA can be fast-forwarded. Git reference transactions check an
 `run()`, `worktree.run()` and `sandbox.run()` accept `preparation` and `iterationOutput` alongside verification. These options require the verified merge/artifact configuration above. A reusable project entry can point to shared commands; Sandcastle owns the iteration loop.
 
 ```ts
-import { run, Output, WORKFLOW_PROTOCOL_VERSION } from "@ai-hero/sandcastle";
+import { run, Output, WORKFLOW_PROTOCOL_VERSION } from "@fly4ai/sandcastle";
 
 if (WORKFLOW_PROTOCOL_VERSION !== 1)
   throw new Error("Unsupported workflow protocol");
@@ -835,8 +837,8 @@ This is independent of `idleTimeoutSeconds`. Before a completion signal, idle ex
 Use `Output.object()` to extract a typed, schema-validated JSON payload from the agent's stdout. The agent emits its answer inside an XML tag you specify, and Sandcastle parses, validates, and returns it on `result.output`. The schema can be any [Standard Schema](https://standardschema.dev) validator — the examples below use [Zod](https://zod.dev), but Valibot, ArkType, and others work identically. See [ADR 0010](docs/adr/0010-structured-output.md) for design rationale.
 
 ```ts
-import { run, Output, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { run, Output, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 import { z } from "zod";
 
 const result = await run({
@@ -878,7 +880,7 @@ const result = await run({
 If you need to drive the retry loop manually — for example, to customise the feedback prompt or rotate models on each attempt — leave `maxRetries` at its default of `0` and resume the failed session yourself:
 
 ```ts
-import { run, Output, StructuredOutputError } from "@ai-hero/sandcastle";
+import { run, Output, StructuredOutputError } from "@fly4ai/sandcastle";
 
 try {
   return await run({ ...opts, output });
@@ -1216,7 +1218,7 @@ import {
   type BindMountCreateOptions,
   type BindMountSandboxHandle,
   type ExecResult,
-} from "@ai-hero/sandcastle";
+} from "@fly4ai/sandcastle";
 import { execFile, spawn } from "node:child_process";
 import { copyFile as fsCopyFile, mkdir as fsMkdir } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -1316,7 +1318,7 @@ import {
   createIsolatedSandboxProvider,
   type IsolatedSandboxHandle,
   type ExecResult,
-} from "@ai-hero/sandcastle";
+} from "@fly4ai/sandcastle";
 import { execFile, spawn } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1432,8 +1434,8 @@ A branch strategy controls where the agent's commits land. Configure it when con
 Branch strategy is now configured on `run()`, not on the provider:
 
 ```typescript
-import { run, claudeCode } from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { run, claudeCode } from "@fly4ai/sandcastle";
+import { docker } from "@fly4ai/sandcastle/sandboxes/docker";
 
 // head — direct write, bind-mount only (default for bind-mount providers)
 await run({
@@ -1461,7 +1463,7 @@ await run({
 Pass your custom provider via the `sandbox` option — it works the same as the built-in `docker()` provider:
 
 ```typescript
-import { run, claudeCode } from "@ai-hero/sandcastle";
+import { run, claudeCode } from "@fly4ai/sandcastle";
 
 const result = await run({
   agent: claudeCode("claude-opus-4-8"),
@@ -1550,3 +1552,7 @@ npm run typecheck # Type-check
 ## License
 
 MIT
+
+## Publishing this fork
+
+The release workflow runs only when manually dispatched. To publish locally after authenticating with npm and obtaining access to the `fly4ai` organization, run `npm ci`, `npm run typecheck`, `npm run build`, `npm test`, then `npm run release`. The 0.13.0 release is already versioned; subsequent releases use `npx changeset version` first. `publishConfig` selects the public npm registry and public access. Push the resulting Changesets release tag after a successful publication.

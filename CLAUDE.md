@@ -10,7 +10,7 @@ When changing public-facing behavior, check `README.md` to see if the documentat
 
 ### Issue tracker
 
-Issues live as GitHub issues in `mattpocock/sandcastle`; external PRs are also a triage surface. See `docs/agents/issue-tracker.md`.
+Issues for this fork live as GitHub issues in `yyyyyyyyyunf/sandcastle`; external PRs are also a triage surface. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
