@@ -10,6 +10,7 @@ import { join, relative } from "node:path";
 import {
   createIsolatedSandboxProvider,
   type ExecResult,
+  type ExecOptions,
   type IsolatedSandboxHandle,
   type IsolatedSandboxProvider,
 } from "../SandboxProvider.js";
@@ -104,15 +105,11 @@ export const daytona = (options?: DaytonaOptions): IsolatedSandboxProvider =>
 
         exec: async (
           command: string,
-          opts?: {
-            onLine?: (line: string) => void;
-            cwd?: string;
-            sudo?: boolean;
-          },
+          opts?: ExecOptions,
         ): Promise<ExecResult> => {
           const effectiveCommand = opts?.sudo ? `sudo ${command}` : command;
-          if (opts?.onLine) {
-            const onLine = opts.onLine;
+          if (opts?.onLine || opts?.onActivity) {
+            const onLine = opts.onLine ?? (() => {});
             const sessionId = `sandcastle-${crypto.randomUUID()}`;
             await sandbox.process.createSession(sessionId);
 
@@ -135,6 +132,7 @@ export const daytona = (options?: DaytonaOptions): IsolatedSandboxProvider =>
                 sessionId,
                 cmdId,
                 (chunk: string) => {
+                  if (chunk.length > 0) opts.onActivity?.();
                   const text = partial + chunk;
                   const lines = text.split("\n");
                   partial = lines.pop() ?? "";
@@ -144,6 +142,7 @@ export const daytona = (options?: DaytonaOptions): IsolatedSandboxProvider =>
                   }
                 },
                 (chunk: string) => {
+                  if (chunk.length > 0) opts.onActivity?.();
                   stderrTail.push(chunk);
                 },
               );

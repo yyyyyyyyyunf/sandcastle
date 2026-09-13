@@ -133,6 +133,14 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
             reject(new Error(`exec failed: ${error.message}`));
           });
 
+          if (opts?.onActivity) {
+            const observe = (chunk: Buffer) => {
+              if (chunk.length > 0) opts.onActivity!();
+            };
+            proc.stdout!.on("data", observe);
+            proc.stderr!.on("data", observe);
+          }
+
           if (opts?.onLine) {
             const onLine = opts.onLine;
             const stdoutTail = new BoundedTail(maxOutputTailChars, "\n");

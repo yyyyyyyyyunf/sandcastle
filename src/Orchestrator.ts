@@ -5,6 +5,7 @@ import { preprocessPrompt } from "./PromptPreprocessor.js";
 import {
   AgentError,
   AgentIdleTimeoutError,
+  AgentExecutionTimeoutError,
   SessionCaptureError,
 } from "./errors.js";
 import type { SandboxError } from "./errors.js";
@@ -24,7 +25,7 @@ const invokeAgent = (
   sandboxRepoDir: string,
   prompt: string,
   provider: AgentProvider,
-  idleTimeoutMs: number,
+  idleTimeoutMs: number | undefined,
   completionTimeoutMs: number,
   completionSignals: readonly string[],
   onText: (text: string) => void,
@@ -36,6 +37,7 @@ const invokeAgent = (
   resumeSession?: string,
   forkSession?: boolean,
   signal?: AbortSignal,
+  executionTimeoutMs?: number,
 ): Effect.Effect<
   { result: string; sessionId?: string; usage?: IterationUsage },
   SandboxError
@@ -101,7 +103,7 @@ const invokeAgent = (
             });
           }),
         );
-      } else {
+      } else if (idleTimeoutMs !== undefined) {
         // Pre-signal idle window — failure on expiry.
         timeoutFiber = Effect.runFork(
           Effect.gen(function* () {
@@ -145,6 +147,7 @@ const invokeAgent = (
         forkSession,
       });
       const execResult = yield* sandbox.exec(printCmd.command, {
+        onActivity: resetTimer,
         onLine: (line) => {
           // Surface the raw line FIRST so verbose mode/forwarders see every
           // stdout line the agent produced, including ones parseStreamLine
@@ -223,6 +226,21 @@ const invokeAgent = (
       AgentIdleTimeoutError | SandboxError
     > = Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
     raced = Effect.raceFirst(raced, Deferred.await(completionTimeoutDeferred));
+    if (executionTimeoutMs !== undefined) {
+      raced = Effect.raceFirst(
+        raced,
+        Effect.sleep(Duration.millis(executionTimeoutMs)).pipe(
+          Effect.zipRight(
+            Effect.fail(
+              new AgentExecutionTimeoutError({
+                message: `Agent execution exceeded ${executionTimeoutMs / 1000} seconds — the fixed execution deadline expired.`,
+                timeoutMs: executionTimeoutMs,
+              }),
+            ),
+          ),
+        ),
+      );
+    }
     if (signal) {
       raced = Effect.raceFirst(
         raced,
@@ -257,14 +275,16 @@ export interface OrchestrateOptions {
   readonly provider: AgentProvider;
   readonly completionSignal?: string | string[];
   /** Idle timeout in seconds. If the agent produces no output for this long, it fails with AgentIdleTimeoutError. Default: 600 (10 minutes) */
-  readonly idleTimeoutSeconds?: number;
+  /** Set false for silent tools only with a finite executionTimeoutSeconds. */
+  readonly idleTimeoutSeconds?: number | false;
+  /** Fixed deadline per agent invocation in seconds; output never renews it. */
+  readonly executionTimeoutSeconds?: number;
   /**
    * Grace window in seconds after a completion signal is observed in the
    * agent's output. The agent process is expected to exit shortly after
    * emitting the signal; if it does not (because a spawned child is keeping
    * stdout open — see ADR 0019), this timer requests termination. Only after
-   * confirmed termination can the iteration return buffered output. Resets on every subsequent output
-   * line, so trailing data (token-usage events, terminal `result` events,
+   * confirmed termination can the iteration return buffered output. Resets on every subsequent stdout/stderr activity, so trailing data (token-usage events, terminal `result` events,
    * structured-output tags) is still captured. Default: 60 seconds.
    */
   readonly completionTimeoutSeconds?: number;
@@ -320,7 +340,9 @@ export const orchestrate = (
   SandboxFactory | Display | AgentStreamEmitter
 > => {
   const idleTimeoutMs =
-    (options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS) * 1000;
+    options.idleTimeoutSeconds === false
+      ? undefined
+      : (options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS) * 1000;
   const completionTimeoutMs =
     (options.completionTimeoutSeconds ?? DEFAULT_COMPLETION_TIMEOUT_SECONDS) *
     1000;
@@ -473,7 +495,7 @@ export const orchestrate = (
                   Effect.runPromise(
                     display.status(
                       label(
-                        `Completion signal seen but agent process is hanging — force-completing after ${timeoutMs / 1000}s grace window.`,
+                        `Completion signal seen but agent process is hanging — requesting termination after ${timeoutMs / 1000}s grace window.`,
                       ),
                       "warn",
                     ),
@@ -500,6 +522,9 @@ export const orchestrate = (
                   iterationResumeSession,
                   iterationForkSession,
                   options.signal,
+                  options.executionTimeoutSeconds === undefined
+                    ? undefined
+                    : options.executionTimeoutSeconds * 1000,
                 );
 
                 // Flush any remaining buffered text deltas

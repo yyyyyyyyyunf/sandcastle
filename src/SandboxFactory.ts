@@ -5,6 +5,7 @@ import type { PlatformError } from "@effect/platform/Error";
 import {
   AgentError,
   AgentIdleTimeoutError,
+  AgentExecutionTimeoutError,
   CopyError,
   ExecError,
   SyncError,
@@ -319,6 +320,13 @@ const attachPreservedPath = <E>(
   e: E | SandboxError,
 ): E | SandboxError => {
   if (path !== undefined) {
+    if (e instanceof AgentExecutionTimeoutError) {
+      return new AgentExecutionTimeoutError({
+        message: e.message,
+        timeoutMs: e.timeoutMs,
+        preservedWorktreePath: path,
+      }) as unknown as E | SandboxError;
+    }
     if (e instanceof AgentIdleTimeoutError) {
       return new AgentIdleTimeoutError({
         message: e.message,

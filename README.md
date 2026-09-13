@@ -391,7 +391,8 @@ if (closeResult.preservedWorktreePath) {
 | `promptArgs`               | PromptArgs         | —                             | Key-value map for `{{KEY}}` placeholder substitution                                                                                 |
 | `maxIterations`            | number             | `1`                           | Maximum iterations to run                                                                                                            |
 | `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String(s) the agent emits to stop the iteration loop early                                                                           |
-| `idleTimeoutSeconds`       | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                          |
+| `idleTimeoutSeconds`       | number \| false    | `600`                         | Idle timeout in seconds; raw stdout/stderr activity resets it. `false` requires `executionTimeoutSeconds`                            |
+| `executionTimeoutSeconds`  | number             | —                             | Fixed deadline per agent invocation in seconds; activity and completion signals never renew it                                       |
 | `completionTimeoutSeconds` | number             | `60`                          | Grace window after the completion signal is seen but the agent process hasn't exited                                                 |
 | `name`                     | string             | —                             | Display name for the run                                                                                                             |
 | `logging`                  | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                     |
@@ -515,7 +516,8 @@ With `branchStrategy: { type: "merge-to-head" }`, each `wt.run()` / `wt.interact
 | `promptFile`               | string                 | —       | Path to prompt file                                                                                                                  |
 | `maxIterations`            | number                 | 1       | Maximum iterations to run                                                                                                            |
 | `completionSignal`         | string \| string[]     | —       | Substring(s) to stop the iteration loop early                                                                                        |
-| `idleTimeoutSeconds`       | number                 | 600     | Idle timeout in seconds                                                                                                              |
+| `idleTimeoutSeconds`       | number \| false        | `600`   | Idle timeout in seconds; raw stdout/stderr activity resets it. `false` requires `executionTimeoutSeconds`                            |
+| `executionTimeoutSeconds`  | number                 | —       | Fixed deadline per agent invocation in seconds; activity and completion signals never renew it                                       |
 | `completionTimeoutSeconds` | number                 | 60      | Grace window after completion signal is seen but agent process hasn't exited                                                         |
 | `name`                     | string                 | —       | Optional run name                                                                                                                    |
 | `logging`                  | LoggingOption          | file    | Logging mode                                                                                                                         |
@@ -663,11 +665,32 @@ await run({
 
 Tell the agent to output your chosen string(s) in the prompt, and the orchestrator will stop when it detects any of them. The matched signal is returned as `result.completionSignal`.
 
+#### Silent tools and execution deadlines
+
+Idle detection observes nonempty stdout/stderr chunks before line buffering or agent parsing. Output without a newline, stderr and unparseable lines all count as activity. A process that is merely alive does not count as progress.
+
+For an agent waiting on a silent test suite or build, disable idle detection explicitly and supply a fixed deadline:
+
+```ts
+await run({
+  agent: claudeCode("claude-opus-4-8"),
+  sandbox: noSandbox(),
+  prompt: "Run the planned checks and finish the task",
+  branchStrategy: { type: "merge-to-head" },
+  idleTimeoutSeconds: false,
+  executionTimeoutSeconds: 3600,
+});
+```
+
+These options also apply to `worktree.run()` and `sandbox.run()`. The execution deadline starts with each agent invocation, after sandbox setup; it never resets, including after a completion signal. Idle expiry fails with `AgentIdleTimeoutError`; the absolute deadline fails with `AgentExecutionTimeoutError`. Both request confirmed termination before returning. Completion grace keeps its buffered-result behavior described below.
+
+Timeout values must be finite positive seconds up to 2147483.647 (the runtime timer limit). Disabling idle without an execution deadline fails before allocation. Existing numeric idle and completion defaults remain 600 and 60 seconds. Legacy third-party providers that do not implement `ExecOptions.onActivity` retain stdout-line activity detection; built-in providers forward raw activity. Remote cancellation support is a separate provider capability.
+
 #### Hanging processes after the completion signal
 
 The agent process is expected to exit shortly after emitting the completion signal. When a child it spawned — a `gh`/git subprocess, a long-lived MCP server, etc. — inherits the agent's stdout pipe and keeps it open, the parent process can linger long past its logical end. Sandcastle would otherwise wait for the full `idleTimeoutSeconds` and fail with `AgentIdleTimeoutError`, throwing away the commits the agent already made.
 
-Instead, once the completion signal is observed in the output buffer, Sandcastle swaps in a short **completion timeout** (default 60 s). When it expires, Sandcastle requests termination and waits for confirmation before returning buffered output or collecting commits. The timer resets on every subsequent output line, so trailing token-usage events, terminal `result` events, and structured-output tags are still captured.
+Instead, once the completion signal is observed in the output buffer, Sandcastle swaps in a short **completion timeout** (default 60 s). When it expires, Sandcastle requests termination and waits for confirmation before returning buffered output or collecting commits. The timer resets on every subsequent stdout/stderr activity, so trailing token-usage events, terminal `result` events, and structured-output tags are still captured.
 
 On macOS/Linux, `noSandbox()` gives each exec invocation its own process group. Cancellation sends SIGTERM, escalates to SIGKILL after 500 ms if needed, and checks that the group has exited. `close()` also stops outstanding exec invocations. A shell exiting while a background child has redirected its stdio does not leave that child running. Deliberately escaping the invocation's process group is outside this provider's cancellation contract.
 
@@ -852,7 +875,8 @@ Removes the Podman image.
 | `copyToWorktree`           | string[]           | —                             | Host-relative file paths to copy into the sandbox before start (not supported with `branchStrategy: { type: 'head' }`)                                                                                                       |
 | `logging`                  | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                                                                                                             |
 | `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                                                                  |
-| `idleTimeoutSeconds`       | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                                                                                  |
+| `idleTimeoutSeconds`       | number \| false    | `600`                         | Idle timeout in seconds; raw stdout/stderr activity resets it. `false` requires `executionTimeoutSeconds`                                                                                                                    |
+| `executionTimeoutSeconds`  | number             | —                             | Fixed deadline per agent invocation in seconds; activity and completion signals never renew it                                                                                                                               |
 | `completionTimeoutSeconds` | number             | `60`                          | Grace window in seconds after the completion signal is observed but the agent process has not exited (hanging process). See [Hanging processes after the completion signal](#hanging-processes-after-the-completion-signal). |
 | `resumeSession`            | string             | —                             | Resume a prior session by ID for agents that support resume. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                                         |
 | `signal`                   | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                                                              |

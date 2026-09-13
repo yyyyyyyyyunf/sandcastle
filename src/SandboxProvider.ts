@@ -15,6 +15,8 @@ export interface ExecResult {
 /** Options shared by all Promise-based sandbox command handles. */
 export interface ExecOptions {
   onLine?: (line: string) => void;
+  /** Called on nonempty stdout/stderr chunks, before line buffering or parsing. */
+  onActivity?: () => void;
   cwd?: string;
   sudo?: boolean;
   stdin?: string;
@@ -40,8 +42,9 @@ export interface BindMountSandboxHandle {
    * Execute a command in the sandbox.
    *
    * Implementations MUST support line-by-line streaming via `onLine`. This is
-   * how Sandcastle delivers live feedback to the user and enforces idle timeouts —
-   * without a streaming implementation, neither will work. A buffered/batch
+   * how Sandcastle delivers live feedback. Call `onActivity` on every nonempty
+   * stdout/stderr chunk before buffering so idle detection includes partial
+   * lines and stderr. Legacy providers without it retain stdout-line detection. A buffered/batch
    * implementation that only calls `onLine` after the process exits does NOT
    * satisfy this contract.
    *
@@ -111,8 +114,9 @@ export interface IsolatedSandboxHandle {
    * Execute a command in the sandbox.
    *
    * Implementations MUST support line-by-line streaming via `onLine`. This is
-   * how Sandcastle delivers live feedback to the user and enforces idle timeouts —
-   * without a streaming implementation, neither will work. A buffered/batch
+   * how Sandcastle delivers live feedback. Call `onActivity` on every nonempty
+   * stdout/stderr chunk before buffering so idle detection includes partial
+   * lines and stderr. Legacy providers without it retain stdout-line detection. A buffered/batch
    * implementation that only calls `onLine` after the process exits does NOT
    * satisfy this contract.
    *
@@ -199,8 +203,9 @@ export interface NoSandboxHandle {
    * Execute a command on the host.
    *
    * Implementations MUST support line-by-line streaming via `onLine`. This is
-   * how Sandcastle delivers live feedback to the user and enforces idle timeouts —
-   * without a streaming implementation, neither will work.
+   * how Sandcastle delivers live feedback. Call `onActivity` on every nonempty
+   * stdout/stderr chunk before buffering so idle detection includes partial
+   * lines and stderr. Legacy providers without it retain stdout-line detection.
    *
    * When `stdin` is set, the implementation pipes the string to the child
    * process's stdin and closes it. This avoids the Linux 128 KB per-arg limit.

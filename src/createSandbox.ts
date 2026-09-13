@@ -1,3 +1,4 @@
+import { validateAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { join } from "node:path";
 import { Effect, Layer, Ref } from "effect";
@@ -115,7 +116,10 @@ export interface ResumeSandboxRunResultOptions {
   /** Substring(s) the agent emits to stop the iteration loop early. */
   readonly completionSignal?: string | string[];
   /** Idle timeout in seconds. Default: 600. */
-  readonly idleTimeoutSeconds?: number;
+  /** Set false for silent tools only with a finite executionTimeoutSeconds. */
+  readonly idleTimeoutSeconds?: number | false;
+  /** Fixed deadline per agent invocation in seconds; output never renews it. */
+  readonly executionTimeoutSeconds?: number;
   /** Grace window in seconds after a completion signal is observed but the agent process has not exited. See ADR 0019. Default: 60. */
   readonly completionTimeoutSeconds?: number;
   /** Display name for this run. */
@@ -256,6 +260,8 @@ export interface Sandbox {
 export interface SandboxExecOptions {
   /** Per-line stdout callback for streaming output. */
   readonly onLine?: (line: string) => void;
+  /** Raw stdout/stderr activity before line buffering. */
+  readonly onActivity?: () => void;
   /** Working directory for the command. Defaults to the sandbox repo path. */
   readonly cwd?: string;
   /** Run the command with sudo, when the provider supports it. */
@@ -333,6 +339,7 @@ const buildSandboxHandle = (
     run: async (runOptions: SandboxRunOptions): Promise<SandboxRunResult> => {
       // If signal is already aborted, reject immediately without any setup
       runOptions.signal?.throwIfAborted();
+      validateAgentTimeouts(runOptions);
 
       const {
         agent: provider,
@@ -472,6 +479,7 @@ const buildSandboxHandle = (
               provider,
               completionSignal: runOptions.completionSignal,
               idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
+              executionTimeoutSeconds: runOptions.executionTimeoutSeconds,
               completionTimeoutSeconds: runOptions.completionTimeoutSeconds,
               name: runOptions.name,
               resumeSession: runOptions.resumeSession,

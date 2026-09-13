@@ -22,6 +22,7 @@ import {
   type BindMountCreateOptions,
   type BindMountSandboxHandle,
   type ExecResult,
+  type ExecOptions,
   type InteractiveExecOptions,
 } from "../SandboxProvider.js";
 import type { MountConfig } from "../MountConfig.js";
@@ -247,15 +248,7 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
       const handle: BindMountSandboxHandle = {
         worktreePath,
 
-        exec: (
-          command: string,
-          opts?: {
-            onLine?: (line: string) => void;
-            cwd?: string;
-            sudo?: boolean;
-            stdin?: string;
-          },
-        ): Promise<ExecResult> => {
+        exec: (command: string, opts?: ExecOptions): Promise<ExecResult> => {
           const effectiveCommand = opts?.sudo ? `sudo ${command}` : command;
           const args = ["exec"];
           if (opts?.stdin !== undefined) args.push("-i");
@@ -280,6 +273,13 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
               reject(new Error(`docker exec failed: ${error.message}`));
             });
 
+            if (opts?.onActivity) {
+              const observe = (chunk: Buffer) => {
+                if (chunk.length > 0) opts.onActivity!();
+              };
+              proc.stdout!.on("data", observe);
+              proc.stderr!.on("data", observe);
+            }
             if (opts?.onLine) {
               const onLine = opts.onLine;
               const stdoutTail = new BoundedTail(maxOutputTailChars, "\n");

@@ -14,6 +14,7 @@ import { Writable } from "node:stream";
 import {
   createIsolatedSandboxProvider,
   type ExecResult,
+  type ExecOptions,
   type IsolatedSandboxHandle,
   type IsolatedSandboxProvider,
 } from "../SandboxProvider.js";
@@ -176,20 +177,17 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
 
         exec: async (
           command: string,
-          opts?: {
-            onLine?: (line: string) => void;
-            cwd?: string;
-            sudo?: boolean;
-          },
+          opts?: ExecOptions,
         ): Promise<ExecResult> => {
-          if (opts?.onLine) {
-            const onLine = opts.onLine;
+          if (opts?.onLine || opts?.onActivity) {
+            const onLine = opts.onLine ?? (() => {});
             const stdoutTail = new BoundedTail(maxOutputTailChars, "\n");
             const stderrTail = new BoundedTail(maxOutputTailChars, "");
             let partial = "";
 
             const stdoutWritable = new Writable({
               write(chunk, _encoding, callback) {
+                if (chunk.length > 0) opts.onActivity?.();
                 const text = partial + chunk.toString();
                 const lines = text.split("\n");
                 partial = lines.pop() ?? "";
@@ -211,6 +209,7 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
 
             const stderrWritable = new Writable({
               write(chunk, _encoding, callback) {
+                if (chunk.length > 0) opts.onActivity?.();
                 stderrTail.push(chunk.toString());
                 callback();
               },

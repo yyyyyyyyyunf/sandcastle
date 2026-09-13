@@ -1,3 +1,4 @@
+import { validateAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { appendFileSync, mkdirSync } from "node:fs";
 import path, { join } from "node:path";
@@ -366,7 +367,10 @@ export interface RunOptions<A extends AgentProvider = AgentProvider> {
   /** Substring(s) the agent emits to stop the iteration loop early. Matched via `includes` against agent output. (default: `"<promise>COMPLETE</promise>"`) */
   readonly completionSignal?: string | string[];
   /** Idle timeout in seconds. If the agent produces no output for this long, it fails. Default: 600 (10 minutes) */
-  readonly idleTimeoutSeconds?: number;
+  /** Set false for silent tools only with a finite executionTimeoutSeconds. */
+  readonly idleTimeoutSeconds?: number | false;
+  /** Fixed deadline per agent invocation in seconds; output never renews it. */
+  readonly executionTimeoutSeconds?: number;
   /**
    * Grace window in seconds after a completion signal is observed in the
    * agent's output. The agent process is expected to exit shortly after
@@ -374,7 +378,7 @@ export interface RunOptions<A extends AgentProvider = AgentProvider> {
    * a `gh`/git subprocess or long-lived MCP server — keeps stdout open),
    * Sandcastle requests termination and returns buffered output only after
    * confirmation; unsupported or failed termination is an error. Resets on every
-   * subsequent output line so trailing data (token-usage events, terminal
+   * subsequent stdout/stderr activity so trailing data (token-usage events, terminal
    * `result` events, structured-output tags) is still captured. Independent
    * of `idleTimeoutSeconds`. Default: 60.
    */
@@ -497,6 +501,7 @@ export async function run(
 ): Promise<RunResult & { output?: unknown }> {
   // If signal is already aborted, reject immediately without any setup
   options.signal?.throwIfAborted();
+  validateAgentTimeouts(options);
 
   const {
     prompt,
@@ -749,6 +754,7 @@ export async function run(
       provider,
       completionSignal: options.completionSignal,
       idleTimeoutSeconds: options.idleTimeoutSeconds,
+      executionTimeoutSeconds: options.executionTimeoutSeconds,
       completionTimeoutSeconds: options.completionTimeoutSeconds,
       name: options.name,
       resumeSession: options.resumeSession,

@@ -1,3 +1,4 @@
+import { validateAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
 import { WorktreeError } from "./errors.js";
@@ -135,7 +136,10 @@ export interface WorktreeRunOptions {
   /** Substring(s) the agent emits to stop the iteration loop early. */
   readonly completionSignal?: string | string[];
   /** Idle timeout in seconds. Default: 600. */
-  readonly idleTimeoutSeconds?: number;
+  /** Set false for silent tools only with a finite executionTimeoutSeconds. */
+  readonly idleTimeoutSeconds?: number | false;
+  /** Fixed deadline per agent invocation in seconds; output never renews it. */
+  readonly executionTimeoutSeconds?: number;
   /** Grace window in seconds after a completion signal is observed but the agent process has not exited. See ADR 0019. Default: 60. */
   readonly completionTimeoutSeconds?: number;
   /** Optional name for the run. */
@@ -504,6 +508,7 @@ export const createWorktree = async (
   ): Promise<WorktreeRunResult> => {
     // If signal is already aborted, reject immediately without any setup
     opts.signal?.throwIfAborted();
+    validateAgentTimeouts(opts);
 
     const { prompt, promptFile, hooks, agent: provider } = opts;
     const sandboxProvider = opts.sandbox;
@@ -694,6 +699,7 @@ export const createWorktree = async (
           provider,
           completionSignal: opts.completionSignal,
           idleTimeoutSeconds: opts.idleTimeoutSeconds,
+          executionTimeoutSeconds: opts.executionTimeoutSeconds,
           completionTimeoutSeconds: opts.completionTimeoutSeconds,
           name: opts.name,
           resumeSession: opts.resumeSession,

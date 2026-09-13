@@ -76,6 +76,15 @@ export class AgentIdleTimeoutError extends Data.TaggedError(
   readonly preservedWorktreePath?: string;
 }> {}
 
+/** Run exceeded the fixed per-invocation execution deadline. */
+export class AgentExecutionTimeoutError extends Data.TaggedError(
+  "AgentExecutionTimeoutError",
+)<{
+  readonly message: string;
+  readonly timeoutMs: number;
+  readonly preservedWorktreePath?: string;
+}> {}
+
 /** Git worktree create or prune timed out */
 export class WorktreeTimeoutError extends Data.TaggedError(
   "WorktreeTimeoutError",
@@ -207,6 +216,7 @@ export type SandboxError =
   | ConfigDirError
   | InitError
   | AgentIdleTimeoutError
+  | AgentExecutionTimeoutError
   | WorktreeTimeoutError
   | ContainerStartTimeoutError
   | CopyToWorktreeTimeoutError
