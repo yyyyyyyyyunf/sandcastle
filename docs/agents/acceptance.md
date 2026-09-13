@@ -16,4 +16,4 @@ The current AFK reliability delivery is governed by the approved cross-repositor
 
 Committed plans: `acceptance/plans/`; committed reports: `acceptance/reports/`; committed baselines if needed: `acceptance/baseline/`. Raw evidence is gitignored under `acceptance/runs/<delivery>/<run-id>/`.
 
-Development dependencies are installed from `package-lock.json` during P0. The observed host is macOS with Node 24.21.0. Windows/provider compatibility is covered by applicable tests; unexecuted platform/runtime checks remain explicitly unverified. Actual Kimi authentication is rechecked in P8.
+Development dependencies are installed from `package-lock.json` during P0. Record Node/npm versions per delivery: the shell selects different versions in the skills checkout and this temporary worktree (P4 here used Node 26.3.0; P5 in skills used Node 24.21.0). Windows/provider compatibility is covered by applicable tests; unexecuted platform/runtime checks remain explicitly unverified. Actual Kimi authentication is rechecked in P8.
