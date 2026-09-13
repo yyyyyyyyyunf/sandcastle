@@ -1,3 +1,8 @@
+import {
+  assertVerificationGit,
+  validateVerification,
+  type VerificationOptions,
+} from "./Verification.js";
 import { createArtifactStore, type ArtifactOptions } from "./Artifacts.js";
 import {
   createRunRecovery,
@@ -66,7 +71,10 @@ import { resolveCwd } from "./resolveCwd.js";
 import { patchGitMountsForWindows } from "./mountUtils.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
 import { registerShutdown } from "./shutdownRegistry.js";
-import { getExecutionTerminationError } from "./executionError.js";
+import {
+  getExecutionTerminationError,
+  getVerificationError,
+} from "./executionError.js";
 import { closeSandboxHandle } from "./sandboxShutdown.js";
 
 export interface CreateSandboxOptions {
@@ -146,6 +154,7 @@ export interface ResumeSandboxRunResultOptions {
 }
 
 export interface SandboxRunOptions extends ResumeSandboxRunResultOptions {
+  readonly verification?: VerificationOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")). */
   readonly agent: AgentProvider;
   /** Inline prompt string (mutually exclusive with promptFile). */
@@ -169,6 +178,7 @@ export interface SandboxRunOptions extends ResumeSandboxRunResultOptions {
 }
 
 export interface SandboxRunResult {
+  readonly stopReason?: "retained";
   readonly artifactRoot?: string;
   readonly runRecordPath?: string;
   readonly preservedWorktreePaths?: string[];
@@ -351,9 +361,15 @@ const buildSandboxHandle = (
       // If signal is already aborted, reject immediately without any setup
       runOptions.signal?.throwIfAborted();
       resolveAgentTimeouts(runOptions);
+      validateVerification(
+        runOptions.verification,
+        mergeToHead ? "merge-to-head" : "branch",
+        runOptions.artifacts,
+      );
       const recovery = createRunRecovery();
       if (runOptions.artifacts && ctx.providerTag === "isolated")
         throw new Error("artifacts is not supported for isolated providers");
+      await assertVerificationGit(runOptions.verification, hostRepoDir);
       const artifactStore = runOptions.artifacts
         ? await createArtifactStore(runOptions.artifacts, hostRepoDir)
         : undefined;
@@ -505,6 +521,8 @@ const buildSandboxHandle = (
               completionSignal: runOptions.completionSignal,
               recovery,
               artifactStore,
+              verification: runOptions.verification,
+              onRetainWorktree: () => ctx.onPreserveWorktree?.(),
               idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
               executionTimeoutSeconds: runOptions.executionTimeoutSeconds,
               completionTimeoutSeconds: runOptions.completionTimeoutSeconds,
@@ -520,6 +538,7 @@ const buildSandboxHandle = (
             const completion = buildCompletionMessage(
               orchestrateResult.completionSignal,
               orchestrateResult.iterations.length,
+              orchestrateResult.stopReason,
             );
             yield* display.status(completion.message, completion.severity);
 
@@ -541,12 +560,15 @@ const buildSandboxHandle = (
           throw withRunRecovery(termination, recovery);
         }
         throw withRunRecovery(
-          runOptions.signal?.aborted ? runOptions.signal.reason : error,
+          runOptions.signal?.aborted
+            ? runOptions.signal.reason
+            : (getVerificationError(error) ?? error),
           recovery,
         );
       }
 
       const baseResult: SandboxRunResult = {
+        stopReason: result.stopReason,
         artifactRoot: result.artifactRoot,
         runRecordPath: result.runRecordPath,
         preservedWorktreePaths: result.preservedWorktreePaths,

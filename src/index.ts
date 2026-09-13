@@ -105,3 +105,9 @@ export type {
   MergeToHeadBranchStrategy,
   NamedBranchStrategy,
 } from "./SandboxProvider.js";
+export { VerificationError } from "./Verification.js";
+export type {
+  VerificationOptions,
+  VerificationDecision,
+  VerificationContext,
+} from "./Verification.js";

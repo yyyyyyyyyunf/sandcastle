@@ -1,4 +1,4 @@
-import { observeProcessActivity } from "../observeProcessActivity.js";
+import { execOwnedProcess } from "../execOwnedProcess.js";
 /**
  * No-sandbox provider — runs the agent directly on the host with no container isolation.
  *
@@ -13,7 +13,6 @@ import { observeProcessActivity } from "../observeProcessActivity.js";
  */
 
 import { spawn, type StdioOptions } from "node:child_process";
-import { createInterface } from "node:readline";
 import type {
   NoSandboxProvider,
   NoSandboxHandle,
@@ -21,11 +20,8 @@ import type {
   InteractiveExecOptions,
   ExecOptions,
 } from "../SandboxProvider.js";
-import { BoundedTail, MAX_TAIL_CHARS } from "../boundedTail.js";
-import {
-  ExecutionTerminationError,
-  terminateProcessGroup,
-} from "../processTermination.js";
+import { MAX_TAIL_CHARS } from "../boundedTail.js";
+import { ExecutionTerminationError } from "../processTermination.js";
 
 export interface NoSandboxOptions {
   /** Environment variables injected by this provider. Merged at launch time. */
@@ -85,93 +81,12 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
           ? ["/d", "/s", "/c", command]
           : ["-c", command];
 
-        const execution = new Promise<ExecResult>((resolve, reject) => {
-          const proc = spawn(shellCmd, shellArgs, {
-            cwd,
-            env: processEnv,
-            stdio: [
-              opts?.stdin !== undefined ? "pipe" : "ignore",
-              "pipe",
-              "pipe",
-            ],
-            windowsVerbatimArguments: isWindows,
-            detached: !isWindows,
-          });
-
-          let stopping: Promise<void> | undefined;
-          const onAbort = () => {
-            if (proc.pid === undefined || stopping) return;
-            stopping = terminateProcessGroup(proc.pid);
-            // Report failure without creating an unhandled rejection while
-            // stdio close is pending. A successful stop still waits for close.
-            stopping.catch(reject);
-          };
-          opts?.signal?.addEventListener("abort", onAbort, { once: true });
-          if (opts?.signal?.aborted) onAbort();
-          const finish = async (result: ExecResult) => {
-            opts?.signal?.removeEventListener("abort", onAbort);
-            try {
-              await stopping;
-              // A parent may exit after redirecting a background child's
-              // stdio. EOF then proves nothing about the rest of its group.
-              if (!stopping && proc.pid !== undefined && !isWindows) {
-                await terminateProcessGroup(proc.pid);
-              }
-              if (stopping) reject(opts?.signal?.reason);
-              else resolve(result);
-            } catch (error) {
-              reject(error);
-            }
-          };
-
-          if (opts?.stdin !== undefined) {
-            proc.stdin!.write(opts.stdin);
-            proc.stdin!.end();
-          }
-
-          proc.on("error", (error) => {
-            opts?.signal?.removeEventListener("abort", onAbort);
-            reject(new Error(`exec failed: ${error.message}`));
-          });
-
-          observeProcessActivity(proc, opts?.onActivity);
-
-          if (opts?.onLine) {
-            const onLine = opts.onLine;
-            const stdoutTail = new BoundedTail(maxOutputTailChars, "\n");
-            const stderrTail = new BoundedTail(maxOutputTailChars, "");
-            const rl = createInterface({ input: proc.stdout! });
-            rl.on("line", (line) => {
-              stdoutTail.push(line);
-              onLine(line);
-            });
-            proc.stderr!.on("data", (chunk: Buffer) => {
-              stderrTail.push(chunk.toString());
-            });
-            proc.on("close", (code) => {
-              void finish({
-                stdout: stdoutTail.toString(),
-                stderr: stderrTail.toString(),
-                exitCode: code ?? 128,
-              });
-            });
-          } else {
-            const stdoutChunks: string[] = [];
-            const stderrChunks: string[] = [];
-            proc.stdout!.on("data", (chunk: Buffer) => {
-              stdoutChunks.push(chunk.toString());
-            });
-            proc.stderr!.on("data", (chunk: Buffer) => {
-              stderrChunks.push(chunk.toString());
-            });
-            proc.on("close", (code) => {
-              void finish({
-                stdout: stdoutChunks.join(""),
-                stderr: stderrChunks.join(""),
-                exitCode: code ?? 128,
-              });
-            });
-          }
+        const execution = execOwnedProcess(shellCmd, shellArgs, {
+          ...opts,
+          cwd,
+          env: processEnv,
+          windowsVerbatimArguments: isWindows,
+          maxOutputTailChars,
         });
         active.set(abort, execution);
         void execution.finally(() => active.delete(abort)).catch(() => {});

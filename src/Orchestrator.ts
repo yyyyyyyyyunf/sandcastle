@@ -1,4 +1,11 @@
 import { ExecutionTerminationError } from "./processTermination.js";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  verifyCandidate,
+  type VerificationOptions,
+  type VerificationDecision,
+} from "./Verification.js";
 import { RunJournal } from "./RunJournal.js";
 import type { ArtifactStore } from "./Artifacts.js";
 import {
@@ -45,8 +52,14 @@ const invokeAgent = (
   resumeSession?: string,
   forkSession?: boolean,
   signal?: AbortSignal,
+  captureFullOutput = false,
 ): Effect.Effect<
-  { result: string; sessionId?: string; usage?: IterationUsage },
+  {
+    result: string;
+    rawStdout?: string;
+    sessionId?: string;
+    usage?: IterationUsage;
+  },
   SandboxError
 > =>
   Effect.gen(function* () {
@@ -62,6 +75,11 @@ const invokeAgent = (
     // hanging process can be force-completed once the signal is in the buffer
     // (see ADR 0019).
     let accumulatedOutput = "";
+    const rawLines: string[] = [];
+    let rawLength = 0;
+    const fullOutput = () => {
+      return rawLines.join("\n");
+    };
 
     // Deferred that fails when the idle timer fires (no signal seen).
     const timeoutSignal = yield* Deferred.make<never, AgentIdleTimeoutError>();
@@ -70,7 +88,12 @@ const invokeAgent = (
     // hand control back to the orchestrator with the buffered output, which
     // still contains the signal so the existing completionSignal check works.
     const completionTimeoutDeferred = yield* Deferred.make<
-      { result: string; sessionId?: string; usage?: IterationUsage },
+      {
+        result: string;
+        rawStdout?: string;
+        sessionId?: string;
+        usage?: IterationUsage;
+      },
       never
     >();
     let timeoutFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
@@ -110,6 +133,7 @@ const invokeAgent = (
             onCompletionTimeout(completionTimeoutMs);
             yield* Deferred.succeed(completionTimeoutDeferred, {
               result: resultText || accumulatedOutput,
+              rawStdout: captureFullOutput ? fullOutput() : undefined,
               sessionId,
               usage,
             });
@@ -161,6 +185,10 @@ const invokeAgent = (
       const execResult = yield* sandbox.exec(printCmd.command, {
         onActivity: resetTimer,
         onLine: (line) => {
+          if (captureFullOutput) {
+            rawLength += Buffer.byteLength(line) + 1;
+            if (rawLength <= 16 * 1024 * 1024) rawLines.push(line);
+          }
           // Surface the raw line FIRST so verbose mode/forwarders see every
           // stdout line the agent produced, including ones parseStreamLine
           // drops. Errors thrown by the callback are caught by the emitter
@@ -221,7 +249,17 @@ const invokeAgent = (
         );
       }
 
-      return { result: resultText || execResult.stdout, sessionId, usage };
+      const rawStdout = captureFullOutput ? fullOutput() : undefined;
+      return {
+        result:
+          resultText ||
+          (captureFullOutput
+            ? accumulatedOutput || rawStdout!
+            : execResult.stdout),
+        rawStdout,
+        sessionId,
+        usage,
+      };
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -234,7 +272,12 @@ const invokeAgent = (
     );
 
     let raced: Effect.Effect<
-      { result: string; sessionId?: string; usage?: IterationUsage },
+      {
+        result: string;
+        rawStdout?: string;
+        sessionId?: string;
+        usage?: IterationUsage;
+      },
       AgentIdleTimeoutError | SandboxError
     > = Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
     raced = Effect.raceFirst(raced, Deferred.await(completionTimeoutDeferred));
@@ -260,7 +303,7 @@ const invokeAgent = (
       );
     }
 
-    return yield* raced.pipe(
+    const outcome = yield* raced.pipe(
       Effect.ensuring(sandbox.assertExecStopped?.() ?? Effect.void),
       Effect.ensuring(
         Effect.sync(() => {
@@ -272,11 +315,21 @@ const invokeAgent = (
         }),
       ),
     );
+    if (rawLength > 16 * 1024 * 1024)
+      return yield* Effect.fail(
+        new AgentError({
+          message:
+            "Guarded iteration output exceeded 16 MiB; verification cannot use a truncated result",
+        }),
+      );
+    return outcome;
   });
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
 
 export interface OrchestrateOptions {
+  readonly verification?: VerificationOptions;
+  readonly onRetainWorktree?: (path: string) => void;
   readonly artifactStore?: ArtifactStore;
   readonly recovery?: RunRecovery;
   readonly hostRepoDir: string;
@@ -324,6 +377,9 @@ export interface OrchestrateOptions {
 
 /** Per-iteration result carrying an optional session ID. */
 export interface IterationResult {
+  readonly iterationId?: string;
+  readonly verification?: VerificationDecision;
+  readonly resultPath?: string;
   readonly artifactRoot?: string;
   /** Claude Code session ID extracted from the init line, or undefined for non-Claude agents. */
   readonly sessionId?: string;
@@ -334,6 +390,7 @@ export interface IterationResult {
 }
 
 export interface OrchestrateResult {
+  readonly stopReason?: "retained";
   readonly runRecordPath?: string;
   readonly artifactRoot?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
@@ -399,6 +456,7 @@ export const orchestrate = (
         ? yield* Effect.promise(() => journal.begin(i))
         : undefined;
       const artifactRoot = attempt?.artifactRoot;
+      let resultPath: string | undefined;
       const sandboxResult = yield* factory.withSandbox(
         (
           {
@@ -427,6 +485,41 @@ export const orchestrate = (
                 preserveArtifacts:
                   journal && attempt
                     ? (worktree) => journal.capture(attempt, worktree)
+                    : undefined,
+                verifyCandidate:
+                  options.verification && journal && attempt
+                    ? async (candidate, result) => {
+                        resultPath = join(
+                          options.artifactStore!.root,
+                          `${attempt.iterationId}.result.json`,
+                        );
+                        await writeFile(
+                          resultPath,
+                          JSON.stringify(result) + "\n",
+                          { flag: "wx" },
+                        );
+                        const context = {
+                          ...candidate,
+                          version: 1 as const,
+                          iterationId: attempt.iterationId,
+                          artifactRoot: attempt.artifactRoot,
+                          resultPath,
+                        };
+                        const decision = await verifyCandidate(
+                          options.verification!,
+                          context,
+                          options.signal,
+                        );
+                        await journal.verified(attempt, context, decision);
+                        if (decision.decision === "retain") {
+                          recordPreservedWorktree(
+                            recovery,
+                            candidate.worktreePath,
+                          );
+                          options.onRetainWorktree?.(candidate.worktreePath);
+                        }
+                        return decision;
+                      }
                     : undefined,
                 signal: options.signal,
                 timeouts: options.timeouts,
@@ -532,6 +625,7 @@ export const orchestrate = (
                   };
                   const {
                     result: agentOutput,
+                    rawStdout,
                     sessionId,
                     usage: streamUsage,
                   } = yield* invokeAgent(
@@ -550,6 +644,7 @@ export const orchestrate = (
                     iterationResumeSession,
                     iterationForkSession,
                     options.signal,
+                    options.verification !== undefined,
                   );
 
                   // Flush any remaining buffered text deltas
@@ -613,6 +708,7 @@ export const orchestrate = (
                   return {
                     completionSignal: matchedSignal,
                     stdout: agentOutput,
+                    rawStdout,
                     sessionId,
                     sessionFilePath,
                     usage,
@@ -636,6 +732,9 @@ export const orchestrate = (
       resolvedBranch = lifecycleResult.branch;
 
       allIterations.push({
+        iterationId: attempt?.iterationId,
+        verification: lifecycleResult.verification,
+        resultPath,
         artifactRoot,
         sessionId: lifecycleResult.result.sessionId,
         sessionFilePath: lifecycleResult.result.sessionFilePath,
@@ -647,12 +746,25 @@ export const orchestrate = (
           journal.completed(attempt, preservedWorktreePaths),
         );
 
-      if (lifecycleResult.result.completionSignal !== undefined) {
+      if (
+        lifecycleResult.verification?.decision === "retain" ||
+        lifecycleResult.result.completionSignal !== undefined
+      ) {
         yield* display.status(
-          label(`Agent signaled completion after ${i} iteration(s).`),
-          "success",
+          label(
+            lifecycleResult.verification?.decision === "retain"
+              ? `Verification retained iteration ${i}; stopping.`
+              : `Agent signaled completion after ${i} iteration(s).`,
+          ),
+          lifecycleResult.verification?.decision === "retain"
+            ? "warn"
+            : "success",
         );
         return {
+          stopReason:
+            lifecycleResult.verification?.decision === "retain"
+              ? ("retained" as const)
+              : undefined,
           artifactRoot: options.artifactStore?.root,
           runRecordPath: journal?.path,
           iterations: allIterations,

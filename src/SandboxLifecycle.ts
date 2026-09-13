@@ -1,3 +1,10 @@
+import {
+  gitRevision,
+  VerificationError,
+  type CandidateContext,
+  type VerificationDecision,
+} from "./Verification.js";
+import { mergeVerifiedCandidate } from "./VerifiedMerge.js";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { Deferred, Duration, Effect, Schedule } from "effect";
@@ -141,6 +148,10 @@ export const runHostHooks = (
   });
 
 export interface SandboxLifecycleOptions {
+  readonly verifyCandidate?: (
+    context: CandidateContext,
+    result: unknown,
+  ) => Promise<VerificationDecision>;
   readonly preserveArtifacts?: (worktree: string) => Promise<void>;
   readonly finalizeSandbox?: () => Effect.Effect<void>;
   readonly hostRepoDir: string;
@@ -172,6 +183,7 @@ export interface SandboxContext {
 }
 
 export interface SandboxLifecycleResult<A> {
+  readonly verification?: VerificationDecision;
   readonly result: A;
   readonly branch: string;
   /** Present only when this invocation actually merged into the host branch. */
@@ -211,6 +223,11 @@ export const withSandboxLifecycle = <A>(
           return stdout.trim();
         })
       : null;
+    const targetCommit = options.verifyCandidate
+      ? yield* Effect.promise(() =>
+          gitRevision(hostRepoDir, "rev-parse", "HEAD"),
+        )
+      : undefined;
 
     // Read host git identity before entering the sandbox
     const [hostGitName, hostGitEmail] = yield* Effect.promise(async () => {
@@ -418,6 +435,46 @@ export const withSandboxLifecycle = <A>(
     let commits: { sha: string }[];
     let finalBranch: string;
     let mergedCommit: string | undefined;
+    let verification: VerificationDecision | undefined;
+
+    if (options.verifyCandidate) {
+      if (!hostCurrentBranch || !targetCommit)
+        return yield* Effect.die(
+          new VerificationError(
+            "configuration",
+            "Verification requires a separate source and target",
+          ),
+        );
+      const context: CandidateContext = {
+        hostRepoDir,
+        worktreePath: hostSideWorktreePath,
+        sourceBranch: yield* Effect.promise(() =>
+          gitRevision(hostSideWorktreePath, "symbolic-ref", "--short", "HEAD"),
+        ),
+        targetBranch: hostCurrentBranch,
+        targetCommit,
+        candidateCommit: yield* Effect.promise(() =>
+          gitRevision(hostSideWorktreePath, "rev-parse", "HEAD"),
+        ),
+      };
+      verification = yield* Effect.promise(() =>
+        options.verifyCandidate!(context, result),
+      );
+      if (verification.decision === "retain")
+        return {
+          result,
+          branch: context.sourceBranch,
+          commits: [],
+          verification,
+        };
+      yield* Effect.promise(() =>
+        mergeVerifiedCandidate(context, options.signal),
+      );
+      mergedCommit =
+        context.candidateCommit !== context.targetCommit
+          ? context.candidateCommit
+          : undefined;
+    }
 
     if (hostCurrentBranch !== null) {
       // Temp branch mode: merge temp branch into host branch, then delete temp branch.
@@ -454,7 +511,7 @@ export const withSandboxLifecycle = <A>(
         });
       }
 
-      if (hasNewCommits) {
+      if (hasNewCommits && !verification) {
         // Fast-forward host's current branch to the temp branch
         yield* display.taskLog(`Merging to ${hostCurrentBranch}`, () =>
           Effect.tryPromise({
@@ -565,5 +622,5 @@ export const withSandboxLifecycle = <A>(
       finalBranch = targetBranch;
     }
 
-    return { result, branch: finalBranch, commits, mergedCommit };
+    return { result, branch: finalBranch, commits, mergedCommit, verification };
   }).pipe(Effect.ensuring(sandbox.assertExecStopped?.() ?? Effect.void));

@@ -227,3 +227,7 @@ A host copy of declared repository-relative evidence, stored in a unique directo
 ## Run record
 
 The host `run.json` that links iteration identities, candidate/merged commits, artifact snapshots, cleanup outcomes and recovery paths. Written before source cleanup and finalized before the next iteration. `caller-owned` means cleanup belongs to an independently managed worktree/sandbox handle.
+
+## Candidate verification
+
+An opt-in host check after execution and evidence export, before a candidate is merged. The host supplies the iteration identity, candidate/target revisions and durable result references. An accept decision permits a fast-forward of the checked commit; retain preserves the source and stops. Business outcome data is opaque to Sandcastle. A verification decision and successful process exit do not themselves certify a project's acceptance criteria.

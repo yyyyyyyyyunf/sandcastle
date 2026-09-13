@@ -1,3 +1,8 @@
+import {
+  assertVerificationGit,
+  validateVerification,
+  type VerificationOptions,
+} from "./Verification.js";
 import { createArtifactStore, type ArtifactOptions } from "./Artifacts.js";
 import {
   createRunRecovery,
@@ -10,7 +15,10 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import path, { join } from "node:path";
 import { styleText } from "node:util";
 import { Effect, Layer } from "effect";
-import { getExecutionTerminationError } from "./executionError.js";
+import {
+  getExecutionTerminationError,
+  getVerificationError,
+} from "./executionError.js";
 import { resolveCwd } from "./resolveCwd.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
 import type { AgentProvider } from "./AgentProvider.js";
@@ -184,7 +192,13 @@ export const buildRunSummaryRows = (
 export const buildCompletionMessage = (
   completionSignal: string | undefined,
   iterationsRun: number,
+  stopReason?: "retained",
 ): { readonly message: string; readonly severity: Severity } => {
+  if (stopReason === "retained")
+    return {
+      message: "Run stopped: verification retained the candidate for review.",
+      severity: "warn",
+    };
   if (completionSignal !== undefined) {
     return {
       message: `Run complete: agent finished after ${iterationsRun} iteration(s).`,
@@ -338,6 +352,7 @@ export interface Timeouts {
 }
 
 export interface RunOptions<A extends AgentProvider = AgentProvider> {
+  readonly verification?: VerificationOptions;
   /** Evidence directories copied to a unique host location before merge/cleanup. */
   readonly artifacts?: ArtifactOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")) */
@@ -454,6 +469,7 @@ export type ResumeRunResultOptions = Omit<
 >;
 
 export interface RunResult {
+  readonly stopReason?: "retained";
   readonly runRecordPath?: string;
   readonly artifactRoot?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
@@ -531,6 +547,11 @@ export async function run(
       ? { type: "merge-to-head" }
       : { type: "head" });
   const effectiveBranchType = branchStrategy.type;
+  validateVerification(
+    options.verification,
+    effectiveBranchType,
+    options.artifacts,
+  );
 
   // Validate: head strategy is not supported with isolated providers
   if (effectiveBranchType === "head" && options.sandbox.tag === "isolated") {
@@ -605,6 +626,7 @@ export async function run(
 
   if (options.artifacts && options.sandbox.tag === "isolated")
     throw new Error("artifacts is not supported for isolated providers");
+  await assertVerificationGit(options.verification, hostRepoDir);
   const artifactStore = options.artifacts
     ? await createArtifactStore(options.artifacts, hostRepoDir)
     : undefined;
@@ -700,6 +722,8 @@ export async function run(
     Layer.mergeAll(
       Layer.succeed(SandboxConfig, {
         preserveWorktreeOnFailure: artifactStore !== undefined,
+        shouldPreserveWorktree: (path) =>
+          recovery.preservedWorktreePaths.includes(path),
         onPreserveWorktree: (path) => recordPreservedWorktree(recovery, path),
         env,
         hostRepoDir,
@@ -776,6 +800,7 @@ export async function run(
       completionSignal: options.completionSignal,
       recovery,
       artifactStore,
+      verification: options.verification,
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       executionTimeoutSeconds: options.executionTimeoutSeconds,
       completionTimeoutSeconds: options.completionTimeoutSeconds,
@@ -790,6 +815,7 @@ export async function run(
     const completion = buildCompletionMessage(
       orchestrateResult.completionSignal,
       orchestrateResult.iterations.length,
+      orchestrateResult.stopReason,
     );
     yield* d.status(completion.message, completion.severity);
 
@@ -829,7 +855,9 @@ export async function run(
     if (termination) throw withRunRecovery(termination, recovery);
     // If the signal was aborted, surface its reason verbatim (no wrapping)
     throw withRunRecovery(
-      options.signal?.aborted ? options.signal.reason : error,
+      options.signal?.aborted
+        ? options.signal.reason
+        : (getVerificationError(error) ?? error),
       recovery,
     );
   }

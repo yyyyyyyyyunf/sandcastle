@@ -1,3 +1,8 @@
+import {
+  assertVerificationGit,
+  validateVerification,
+  type VerificationOptions,
+} from "./Verification.js";
 import { createArtifactStore, type ArtifactOptions } from "./Artifacts.js";
 import {
   createRunRecovery,
@@ -65,7 +70,10 @@ import {
 } from "./PromptArgumentSubstitution.js";
 import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
-import { getExecutionTerminationError } from "./executionError.js";
+import {
+  getExecutionTerminationError,
+  getVerificationError,
+} from "./executionError.js";
 import { closeSandboxHandle } from "./sandboxShutdown.js";
 import type { Timeouts } from "./run.js";
 
@@ -127,6 +135,7 @@ export interface WorktreeInteractiveOptions {
 }
 
 export interface WorktreeRunOptions {
+  readonly verification?: VerificationOptions;
   readonly artifacts?: ArtifactOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")) */
   readonly agent: AgentProvider;
@@ -172,6 +181,7 @@ export interface WorktreeRunOptions {
 }
 
 export interface WorktreeRunResult {
+  readonly stopReason?: "retained";
   readonly artifactRoot?: string;
   readonly runRecordPath?: string;
   readonly preservedWorktreePaths?: string[];
@@ -520,9 +530,15 @@ export const createWorktree = async (
     // If signal is already aborted, reject immediately without any setup
     opts.signal?.throwIfAborted();
     resolveAgentTimeouts(opts);
+    validateVerification(
+      opts.verification,
+      isMergeToHead ? "merge-to-head" : "branch",
+      opts.artifacts,
+    );
     const recovery = createRunRecovery();
     if (opts.artifacts && opts.sandbox.tag === "isolated")
       throw new Error("artifacts is not supported for isolated providers");
+    await assertVerificationGit(opts.verification, hostRepoDir);
     const artifactStore = opts.artifacts
       ? await createArtifactStore(opts.artifacts, hostRepoDir)
       : undefined;
@@ -725,6 +741,10 @@ export const createWorktree = async (
           completionSignal: opts.completionSignal,
           recovery,
           artifactStore,
+          verification: opts.verification,
+          onRetainWorktree: () => {
+            preserveWorktree = true;
+          },
           idleTimeoutSeconds: opts.idleTimeoutSeconds,
           executionTimeoutSeconds: opts.executionTimeoutSeconds,
           completionTimeoutSeconds: opts.completionTimeoutSeconds,
@@ -739,6 +759,7 @@ export const createWorktree = async (
         const completion = buildCompletionMessage(
           orchestrateResult.completionSignal,
           orchestrateResult.iterations.length,
+          orchestrateResult.stopReason,
         );
         yield* display.status(completion.message, completion.severity);
 
@@ -752,6 +773,7 @@ export const createWorktree = async (
       }).pipe(Effect.provide(runLayer));
 
       return {
+        stopReason: result.stopReason,
         artifactRoot: result.artifactRoot,
         runRecordPath: result.runRecordPath,
         preservedWorktreePaths: result.preservedWorktreePaths,
@@ -783,7 +805,9 @@ export const createWorktree = async (
         throw withRunRecovery(termination, recovery);
       }
       throw withRunRecovery(
-        opts.signal?.aborted ? opts.signal.reason : error,
+        opts.signal?.aborted
+          ? opts.signal.reason
+          : (getVerificationError(error) ?? error),
         recovery,
       );
     }

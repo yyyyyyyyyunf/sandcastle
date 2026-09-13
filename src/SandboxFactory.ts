@@ -240,6 +240,7 @@ export class SandboxConfig extends Context.Tag("SandboxConfig")<
   SandboxConfig,
   {
     readonly preserveWorktreeOnFailure?: boolean;
+    readonly shouldPreserveWorktree?: (path: string) => boolean;
     readonly onPreserveWorktree?: (path: string) => void;
     readonly env: Record<string, string>;
     readonly hostRepoDir: string;
@@ -281,15 +282,17 @@ const cleanupWorktree = (
   exit: Exit.Exit<unknown, unknown>,
   preserveOnFailure = false,
   onFailure?: (path: string) => void,
+  requested = false,
 ): Effect.Effect<string | undefined, WorktreeError> => {
   if (
-    Exit.isFailure(exit) &&
-    (preserveOnFailure ||
-      Array.from(Cause.defects(exit.cause)).some(
-        (error) =>
-          error instanceof ExecutionTerminationError ||
-          error instanceof ArtifactError,
-      ))
+    requested ||
+    (Exit.isFailure(exit) &&
+      (preserveOnFailure ||
+        Array.from(Cause.defects(exit.cause)).some(
+          (error) =>
+            error instanceof ExecutionTerminationError ||
+            error instanceof ArtifactError,
+        )))
   ) {
     printWorktreePreservedMessage(
       worktreePath,
@@ -404,6 +407,7 @@ export const WorktreeDockerSandboxFactory = {
         timeouts,
         onPreserveWorktree,
         preserveWorktreeOnFailure,
+        shouldPreserveWorktree,
       } = yield* SandboxConfig;
 
       const isHeadMode = branchStrategy.type === "head";
@@ -544,6 +548,7 @@ export const WorktreeDockerSandboxFactory = {
                   exit,
                   preserveWorktreeOnFailure,
                   onPreserveWorktree,
+                  shouldPreserveWorktree?.(worktreeInfo.path),
                 ).pipe(
                   Effect.tap((p) => {
                     preservedPath = p;
@@ -615,6 +620,7 @@ export const WorktreeDockerSandboxFactory = {
                   exit,
                   preserveWorktreeOnFailure,
                   onPreserveWorktree,
+                  shouldPreserveWorktree?.(worktreeInfo.path),
                 ).pipe(
                   Effect.tap((p) => {
                     preservedPath = p;
@@ -783,6 +789,7 @@ export const WorktreeDockerSandboxFactory = {
                 exit,
                 preserveWorktreeOnFailure,
                 onPreserveWorktree,
+                shouldPreserveWorktree?.(worktreeInfo.path),
               ).pipe(
                 Effect.tap((p) => {
                   preservedWorktreePath = p;

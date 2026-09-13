@@ -701,6 +701,30 @@ The host JSON record includes each iteration's identity, candidate/merged revisi
 
 Success results and errors with partial progress expose `preservedWorktreePaths`, available `iterations`, and `runRecordPath`. `preservedWorktreePath` remains compatible and now names the most recently preserved path, including when a later iteration was clean. Ordinary error objects keep their identity; primitive/frozen errors that need recovery fields are wrapped in `RunRecoveryError` with the original as `cause`. Exported snapshots and runner records do not certify workflow acceptance. See [ADR 0020](docs/adr/0020-durable-run-evidence.md).
 
+#### Verification before merge
+
+Opt into a host check before a candidate reaches the target branch:
+
+```ts
+const result = await run({
+  // agent, sandbox and prompt as usual
+  branchStrategy: { type: "merge-to-head" },
+  artifacts: { root: ".sandcastle/evidence", paths: ["acceptance/runs"] },
+  verification: {
+    command: [process.execPath, "/absolute/path/to/shared-checker.mjs"],
+    timeoutSeconds: 30,
+  },
+});
+console.log(result.stopReason); // "retained" when the checker retains a candidate
+console.log(result.iterations[0]?.verification); // decision and opaque outcome
+```
+
+The argv command receives one `VerificationContext` JSON object on stdin. It includes `version: 1`, `iterationId`, `hostRepoDir`, `worktreePath`, `sourceBranch`, `candidateCommit`, `targetBranch`, `targetCommit`, `artifactRoot`, and `resultPath`. The durable result file contains `stdout`, complete `rawStdout` lines and available session/usage fields. Checks run after execution has stopped and evidence is exported. Guarded output beyond 16 MiB fails; display-tail settings never silently shorten a successful check's input.
+
+Write one JSON decision to stdout: `{"version":1,"decision":"accept","outcome":{...}}` or `{"version":1,"decision":"retain","outcome":{...}}`. The optional outcome is passed through unchanged. Retain stops before another iteration, preserves the source branch/worktree and returns normally. `VerificationError.kind` distinguishes `configuration`, `command`, `protocol`, `timeout`, `changed` and `merge` failures; errors expose recovery references. Checker output exceeding 1 MiB is a protocol error. Timeout and abort use confirmed process cancellation.
+
+Only the accepted SHA can be fast-forwarded. Git reference transactions check and lock source/target HEADs and commits through the update, so a later target change cannot become a new implicit baseline. Guarded execution requires Git 2.30+, artifacts and explicit merge-to-head; head and named-branch modes are rejected. Windows guarded execution is currently unsupported. `worktree.run()` and a sandbox nested in a merge-to-head worktree support the same option. The guarded update uses Git plumbing and does not run porcelain-only `post-merge` hooks. A failure after checkout starts may require recovery of the target working directory; retained source and journal references remain available. See [ADR 0021](docs/adr/0021-verify-before-merge.md).
+
 #### Silent tools and execution deadlines
 
 Idle detection observes nonempty stdout/stderr chunks before line buffering or agent parsing. Output without a newline, stderr and unparseable lines all count as activity. A process that is merely alive does not count as progress.

@@ -4,6 +4,10 @@ import { open, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ArtifactError, type ArtifactStore } from "./Artifacts.js";
+import type {
+  VerificationContext,
+  VerificationDecision,
+} from "./Verification.js";
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) =>
@@ -17,6 +21,8 @@ export interface RecordedIteration {
   sourceBranch?: string;
   candidateCommit?: string;
   mergedCommit?: string;
+  verification?: VerificationDecision;
+  verificationContext?: VerificationContext;
   commits?: { sha: string }[];
   cleanup: "pending" | "removed" | "preserved" | "caller-owned" | "failed";
   status: "preparing" | "prepared" | "recorded" | "completed";
@@ -100,6 +106,15 @@ export class RunJournal {
     attempt.mergedCommit = result.mergedCommit;
     attempt.commits = result.commits;
     attempt.status = "recorded";
+    await this.save();
+  }
+  async verified(
+    attempt: RecordedIteration,
+    context: VerificationContext,
+    decision: VerificationDecision,
+  ): Promise<void> {
+    attempt.verification = decision;
+    attempt.verificationContext = context;
     await this.save();
   }
   async completed(
