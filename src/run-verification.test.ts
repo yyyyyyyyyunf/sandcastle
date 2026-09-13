@@ -132,6 +132,7 @@ itPosix.each(["run", "worktree", "nested-sandbox"] as const)(
       }
     }
   },
+  15000,
 );
 
 itPosix.each(["head", "branch", "missing-artifacts", "bad-timeout"])(

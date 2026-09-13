@@ -1,11 +1,8 @@
+import { gitOutput } from "./gitOutput.js";
 import type { Writable } from "node:stream";
 import { execOwnedProcess } from "./execOwnedProcess.js";
 import { ExecutionTerminationError } from "./processTermination.js";
-import {
-  gitRevision,
-  VerificationError,
-  type CandidateContext,
-} from "./Verification.js";
+import { VerificationError, type CandidateContext } from "./Verification.js";
 
 /** Hold Git's ref locks while checking and applying the fast-forward. */
 export const mergeVerifiedCandidate = async (
@@ -24,14 +21,14 @@ export const mergeVerifiedCandidate = async (
   const targetRef = `refs/heads/${targetBranch}`;
   try {
     if (
-      (await gitRevision(worktreePath, "status", "--porcelain")) ||
-      (await gitRevision(hostRepoDir, "status", "--porcelain"))
+      (await gitOutput(worktreePath, "status", "--porcelain")) ||
+      (await gitOutput(hostRepoDir, "status", "--porcelain"))
     )
       throw new VerificationError(
         "changed",
         "Candidate and target must remain Git-clean through verification",
       );
-    await gitRevision(
+    await gitOutput(
       hostRepoDir,
       "merge-base",
       "--is-ancestor",
@@ -65,8 +62,7 @@ export const mergeVerifiedCandidate = async (
       combined,
       async () => {
         if (
-          (await gitRevision(worktreePath, "symbolic-ref", "HEAD")) !==
-          sourceRef
+          (await gitOutput(worktreePath, "symbolic-ref", "HEAD")) !== sourceRef
         )
           throw new VerificationError(
             "changed",
@@ -78,7 +74,7 @@ export const mergeVerifiedCandidate = async (
           combined,
           async () => {
             if (
-              (await gitRevision(hostRepoDir, "symbolic-ref", "HEAD")) !==
+              (await gitOutput(hostRepoDir, "symbolic-ref", "HEAD")) !==
               targetRef
             )
               throw new VerificationError(

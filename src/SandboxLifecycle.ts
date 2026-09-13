@@ -1,5 +1,5 @@
+import { gitOutput } from "./gitOutput.js";
 import {
-  gitRevision,
   VerificationError,
   type CandidateContext,
   type VerificationDecision,
@@ -224,9 +224,7 @@ export const withSandboxLifecycle = <A>(
         })
       : null;
     const targetCommit = options.verifyCandidate
-      ? yield* Effect.promise(() =>
-          gitRevision(hostRepoDir, "rev-parse", "HEAD"),
-        )
+      ? yield* Effect.promise(() => gitOutput(hostRepoDir, "rev-parse", "HEAD"))
       : undefined;
 
     // Read host git identity before entering the sandbox
@@ -449,12 +447,12 @@ export const withSandboxLifecycle = <A>(
         hostRepoDir,
         worktreePath: hostSideWorktreePath,
         sourceBranch: yield* Effect.promise(() =>
-          gitRevision(hostSideWorktreePath, "symbolic-ref", "--short", "HEAD"),
+          gitOutput(hostSideWorktreePath, "symbolic-ref", "--short", "HEAD"),
         ),
         targetBranch: hostCurrentBranch,
         targetCommit,
         candidateCommit: yield* Effect.promise(() =>
-          gitRevision(hostSideWorktreePath, "rev-parse", "HEAD"),
+          gitOutput(hostSideWorktreePath, "rev-parse", "HEAD"),
         ),
       };
       verification = yield* Effect.promise(() =>

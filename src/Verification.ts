@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { ArtifactError } from "./Artifacts.js";
+import { gitOutput } from "./gitOutput.js";
 import { execOwnedProcess } from "./execOwnedProcess.js";
 import { ExecutionTerminationError } from "./processTermination.js";
 
@@ -31,7 +29,7 @@ export interface VerificationContext extends CandidateContext {
   readonly resultPath: string;
 }
 
-export class VerificationError extends ArtifactError {
+export class VerificationError extends Error {
   constructor(
     readonly kind:
       | "configuration"
@@ -173,13 +171,12 @@ export const verifyCandidate = async (
   }
 };
 
-const exec = promisify(execFile);
 export const assertVerificationGit = async (
   verification: VerificationOptions | undefined,
   cwd: string,
 ): Promise<void> => {
   if (!verification) return;
-  const version = await gitRevision(cwd, "version");
+  const version = await gitOutput(cwd, "version");
   const match = /^git version (\d+)\.(\d+)/.exec(version);
   if (
     !match ||
@@ -191,8 +188,3 @@ export const assertVerificationGit = async (
       "verification requires Git 2.30 or newer for reference transactions",
     );
 };
-export const gitRevision = async (
-  cwd: string,
-  ...args: string[]
-): Promise<string> =>
-  (await exec("git", args, { cwd, timeout: 10000 })).stdout.trim();

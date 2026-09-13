@@ -82,18 +82,19 @@ const invokeAgent = (
     };
 
     // Deferred that fails when the idle timer fires (no signal seen).
-    const timeoutSignal = yield* Deferred.make<never, AgentIdleTimeoutError>();
-    // Deferred that resolves successfully when the completion-grace timer
-    // fires (signal seen but process hasn't exited). Resolving lets the race
-    // hand control back to the orchestrator with the buffered output, which
-    // still contains the signal so the existing completionSignal check works.
+    const executionFailure = yield* Deferred.make<
+      never,
+      AgentIdleTimeoutError | AgentError
+    >();
+    const outputLimitError = () =>
+      new AgentError({
+        message:
+          "Guarded iteration output exceeded 16 MiB; verification cannot use a truncated result",
+      });
+    // Request termination without freezing output. TERM handlers may still
+    // emit result/session/usage data before the invocation actually stops.
     const completionTimeoutDeferred = yield* Deferred.make<
-      {
-        result: string;
-        rawStdout?: string;
-        sessionId?: string;
-        usage?: IterationUsage;
-      },
+      { completionTimedOut: true },
       never
     >();
     let timeoutFiber: Fiber.RuntimeFiber<unknown, unknown> | null = null;
@@ -132,10 +133,7 @@ const invokeAgent = (
             yield* Effect.sleep(Duration.millis(completionTimeoutMs));
             onCompletionTimeout(completionTimeoutMs);
             yield* Deferred.succeed(completionTimeoutDeferred, {
-              result: resultText || accumulatedOutput,
-              rawStdout: captureFullOutput ? fullOutput() : undefined,
-              sessionId,
-              usage,
+              completionTimedOut: true as const,
             });
           }),
         );
@@ -145,7 +143,7 @@ const invokeAgent = (
           Effect.gen(function* () {
             yield* Effect.sleep(Duration.millis(idleTimeoutMs));
             yield* Deferred.fail(
-              timeoutSignal,
+              executionFailure,
               new AgentIdleTimeoutError({
                 message: `Agent idle for ${idleTimeoutMs / 1000} seconds — no output received. Consider increasing the idle timeout with --idle-timeout.`,
                 timeoutMs: idleTimeoutMs,
@@ -187,7 +185,13 @@ const invokeAgent = (
         onLine: (line) => {
           if (captureFullOutput) {
             rawLength += Buffer.byteLength(line) + 1;
-            if (rawLength <= 16 * 1024 * 1024) rawLines.push(line);
+            if (rawLength > 16 * 1024 * 1024) {
+              Effect.runFork(
+                Deferred.fail(executionFailure, outputLimitError()),
+              );
+              return;
+            }
+            rawLines.push(line);
           }
           // Surface the raw line FIRST so verbose mode/forwarders see every
           // stdout line the agent produced, including ones parseStreamLine
@@ -272,14 +276,15 @@ const invokeAgent = (
     );
 
     let raced: Effect.Effect<
-      {
-        result: string;
-        rawStdout?: string;
-        sessionId?: string;
-        usage?: IterationUsage;
-      },
+      | {
+          result: string;
+          rawStdout?: string;
+          sessionId?: string;
+          usage?: IterationUsage;
+        }
+      | { completionTimedOut: true },
       AgentIdleTimeoutError | SandboxError
-    > = Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
+    > = Effect.raceFirst(execEffect, Deferred.await(executionFailure));
     raced = Effect.raceFirst(raced, Deferred.await(completionTimeoutDeferred));
     if (executionTimeoutMs !== undefined) {
       raced = Effect.raceFirst(
@@ -316,13 +321,18 @@ const invokeAgent = (
       ),
     );
     if (rawLength > 16 * 1024 * 1024)
-      return yield* Effect.fail(
-        new AgentError({
-          message:
-            "Guarded iteration output exceeded 16 MiB; verification cannot use a truncated result",
-        }),
-      );
-    return outcome;
+      return yield* Effect.fail(outputLimitError());
+    return "completionTimedOut" in outcome
+      ? {
+          result:
+            resultText ||
+            accumulatedOutput ||
+            (captureFullOutput ? fullOutput() : ""),
+          rawStdout: captureFullOutput ? fullOutput() : undefined,
+          sessionId,
+          usage,
+        }
+      : outcome;
   });
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";

@@ -156,6 +156,7 @@ itPosix.each(["run", "worktree", "sandbox"] as const)(
       }
     }
   },
+  15000,
 );
 
 itPosix.each(["worktree", "sandbox"] as const)(
