@@ -180,6 +180,8 @@ export interface SandboxContext {
   readonly sandbox: SandboxService;
   readonly sandboxRepoDir: string;
   readonly baseHead: string;
+  readonly targetBranch?: string;
+  readonly targetCommit?: string;
 }
 
 export interface SandboxLifecycleResult<A> {
@@ -399,7 +401,13 @@ export const withSandboxLifecycle = <A>(
     });
 
     // Run the caller's work
-    const result = yield* work({ sandbox, sandboxRepoDir, baseHead });
+    const result = yield* work({
+      sandbox,
+      sandboxRepoDir,
+      baseHead,
+      targetBranch: hostCurrentBranch ?? undefined,
+      targetCommit,
+    });
     yield* sandbox.assertExecStopped?.() ?? Effect.void;
 
     // Sync changes from sandbox to host worktree (isolated sandbox only).

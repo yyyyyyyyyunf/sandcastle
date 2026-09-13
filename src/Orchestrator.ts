@@ -1,3 +1,20 @@
+import { PreparationError, assertPreparedTarget } from "./Preparation.js";
+import { extractStructuredOutput } from "./extractStructuredOutput.js";
+import type { OutputDefinition } from "./Output.js";
+import {
+  substitutePromptArgs,
+  BUILT_IN_PROMPT_ARG_KEYS,
+  type PromptArgs,
+} from "./PromptArgumentSubstitution.js";
+import { randomUUID } from "node:crypto";
+import { gitOutput } from "./gitOutput.js";
+import {
+  prepareIteration,
+  type PreparationOptions,
+  type PreparationDecision,
+  type PreparationContext,
+  type RunStopReason,
+} from "./Preparation.js";
 import { ExecutionTerminationError } from "./processTermination.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -338,6 +355,9 @@ const invokeAgent = (
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
 
 export interface OrchestrateOptions {
+  readonly preparation?: PreparationOptions;
+  readonly iterationOutput?: OutputDefinition;
+  readonly promptTemplate?: { text: string; args: PromptArgs };
   readonly verification?: VerificationOptions;
   readonly onRetainWorktree?: (path: string) => void;
   readonly artifactStore?: ArtifactStore;
@@ -387,6 +407,15 @@ export interface OrchestrateOptions {
 
 /** Per-iteration result carrying an optional session ID. */
 export interface IterationResult {
+  readonly metadata?: unknown;
+  readonly output?: unknown;
+  readonly rawResultPath?: string;
+  readonly sourceBranch?: string;
+  readonly targetBranch?: string;
+  readonly targetCommit?: string;
+  readonly candidateCommit?: string;
+  readonly mergedCommit?: string;
+  readonly commits?: { sha: string }[];
   readonly iterationId?: string;
   readonly verification?: VerificationDecision;
   readonly resultPath?: string;
@@ -400,7 +429,8 @@ export interface IterationResult {
 }
 
 export interface OrchestrateResult {
-  readonly stopReason?: "retained";
+  readonly stopReason?: RunStopReason;
+  readonly preparation?: PreparationDecision;
   readonly runRecordPath?: string;
   readonly artifactRoot?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
@@ -462,11 +492,55 @@ export const orchestrate = (
       yield* checkAbort();
       yield* display.status(label(`Iteration ${i}/${iterations}`), "info");
 
+      let preparedContext: PreparationContext | undefined;
+      let preparation: PreparationDecision | undefined;
+      if (options.preparation) {
+        preparedContext = {
+          version: 1,
+          iterationId: randomUUID(),
+          hostRepoDir,
+          targetBranch: yield* Effect.promise(() =>
+            gitOutput(hostRepoDir, "symbolic-ref", "--short", "HEAD"),
+          ),
+          targetCommit: yield* Effect.promise(() =>
+            gitOutput(hostRepoDir, "rev-parse", "HEAD"),
+          ),
+        };
+        const context = preparedContext;
+        yield* Effect.promise(() => journal!.preparing(context));
+        preparation = yield* Effect.promise(() =>
+          prepareIteration(options.preparation!, context, options.signal),
+        );
+        const decision = preparation;
+        yield* Effect.promise(() => journal!.prepared(context, decision));
+        if (decision.decision !== "run")
+          return {
+            stopReason: decision.decision,
+            preparation: decision,
+            artifactRoot: options.artifactStore?.root,
+            runRecordPath: journal?.path,
+            iterations: allIterations,
+            stdout: allStdout,
+            commits: allCommits,
+            branch: resolvedBranch || context.targetBranch,
+            preservedWorktreePaths,
+            preservedWorktreePath: preservedWorktreePaths.at(-1),
+          };
+        yield* Effect.promise(() => assertPreparedTarget(context));
+      }
       const attempt = journal
-        ? yield* Effect.promise(() => journal.begin(i))
+        ? yield* Effect.promise(() =>
+            journal.begin(
+              i,
+              preparedContext?.iterationId,
+              preparation?.metadata,
+            ),
+          )
         : undefined;
       const artifactRoot = attempt?.artifactRoot;
       let resultPath: string | undefined;
+      let rawResultPath: string | undefined;
+      let extractedOutput: unknown;
       const sandboxResult = yield* factory.withSandbox(
         (
           {
@@ -499,19 +573,65 @@ export const orchestrate = (
                 verifyCandidate:
                   options.verification && journal && attempt
                     ? async (candidate, result) => {
+                        rawResultPath = join(
+                          options.artifactStore!.root,
+                          `${attempt.iterationId}.raw.json`,
+                        );
+                        const raw = result as {
+                          stdout: string;
+                          sessionId?: string;
+                          sessionFilePath?: string;
+                        };
+                        const boundResult = {
+                          ...raw,
+                          ...candidate,
+                          iterationId: attempt.iterationId,
+                          metadata: preparation?.metadata,
+                        };
+                        await writeFile(
+                          rawResultPath,
+                          JSON.stringify(boundResult) + "\n",
+                          { flag: "wx" },
+                        );
+                        await journal.result(attempt, {
+                          ...candidate,
+                          rawResultPath,
+                        });
+                        if (options.iterationOutput)
+                          extractedOutput = await extractStructuredOutput(
+                            raw.stdout,
+                            options.iterationOutput,
+                            {
+                              commits: [],
+                              branch: candidate.sourceBranch,
+                              preservedWorktreePath: candidate.worktreePath,
+                              sessionId: raw.sessionId,
+                              sessionFilePath: raw.sessionFilePath,
+                            },
+                          );
                         resultPath = join(
                           options.artifactStore!.root,
                           `${attempt.iterationId}.result.json`,
                         );
                         await writeFile(
                           resultPath,
-                          JSON.stringify(result) + "\n",
+                          JSON.stringify({
+                            ...boundResult,
+                            output: extractedOutput,
+                          }) + "\n",
                           { flag: "wx" },
                         );
+                        await journal.result(attempt, {
+                          ...candidate,
+                          rawResultPath,
+                          resultPath,
+                          output: extractedOutput,
+                        });
                         const context = {
                           ...candidate,
                           version: 1 as const,
                           iterationId: attempt.iterationId,
+                          metadata: preparation?.metadata,
                           artifactRoot: attempt.artifactRoot,
                           resultPath,
                         };
@@ -567,13 +687,92 @@ export const orchestrate = (
 
                   // Preprocess prompt (run !`command` expressions inside sandbox).
                   // Inline prompts pass through literally — skip expansion.
-                  const fullPrompt = options.skipPromptExpansion
-                    ? prompt
+                  let iterationPrompt = prompt;
+                  let handoff:
+                    | (PreparationContext & {
+                        sourceBranch: string;
+                        worktreePath: string;
+                      })
+                    | undefined;
+                  if (options.preparation || options.iterationOutput) {
+                    const identity = yield* Effect.promise(async () => {
+                      const worktreePath =
+                        hostWorktreePath ?? ctx.sandboxRepoDir;
+                      const sourceBranch = await gitOutput(
+                        worktreePath,
+                        "symbolic-ref",
+                        "--short",
+                        "HEAD",
+                      );
+                      const targetBranch =
+                        preparedContext?.targetBranch ?? ctx.targetBranch!;
+                      const targetCommit =
+                        preparedContext?.targetCommit ?? ctx.targetCommit!;
+                      if (ctx.baseHead !== targetCommit)
+                        throw new PreparationError(
+                          "changed",
+                          "Prepared target or source baseline changed before agent invocation",
+                        );
+                      return {
+                        version: 1 as const,
+                        hostRepoDir,
+                        iterationId: attempt!.iterationId,
+                        metadata: preparation?.metadata,
+                        sourceBranch,
+                        targetBranch,
+                        targetCommit,
+                        worktreePath,
+                        sandboxRepoDir: ctx.sandboxRepoDir,
+                        artifactRoot,
+                        outputTag: options.iterationOutput?.tag,
+                      };
+                    });
+                    handoff = identity;
+                    if (options.promptTemplate)
+                      iterationPrompt = yield* substitutePromptArgs(
+                        options.promptTemplate.text,
+                        {
+                          ...options.promptTemplate.args,
+                          SOURCE_BRANCH: identity.sourceBranch,
+                          TARGET_BRANCH: identity.targetBranch,
+                        },
+                        new Set<string>(BUILT_IN_PROMPT_ARG_KEYS),
+                      );
+                  }
+                  let fullPrompt = options.skipPromptExpansion
+                    ? iterationPrompt
                     : yield* preprocessPrompt(
-                        prompt,
+                        iterationPrompt,
                         ctx.sandbox,
                         ctx.sandboxRepoDir,
                       );
+                  if (handoff) {
+                    const context = handoff;
+                    yield* Effect.promise(async () => {
+                      await assertPreparedTarget(context);
+                      if (
+                        (await gitOutput(
+                          context.worktreePath,
+                          "rev-parse",
+                          "HEAD",
+                        )) !== context.targetCommit ||
+                        (await gitOutput(
+                          context.worktreePath,
+                          "symbolic-ref",
+                          "--short",
+                          "HEAD",
+                        )) !== context.sourceBranch
+                      )
+                        throw new PreparationError(
+                          "changed",
+                          "Source baseline changed during prompt preparation",
+                        );
+                    });
+                    fullPrompt +=
+                      "\n\n<sandcastle-iteration-context>\n" +
+                      JSON.stringify(handoff).replaceAll("<", "\\u003c") +
+                      "\n</sandcastle-iteration-context>";
+                  }
 
                   yield* display.status(label("Agent started"), "success");
 
@@ -743,6 +942,15 @@ export const orchestrate = (
 
       allIterations.push({
         iterationId: attempt?.iterationId,
+        metadata: preparation?.metadata,
+        output: extractedOutput,
+        rawResultPath,
+        sourceBranch: attempt?.sourceBranch,
+        targetBranch: attempt?.targetBranch,
+        targetCommit: attempt?.targetCommit,
+        candidateCommit: attempt?.candidateCommit,
+        mergedCommit: lifecycleResult.mergedCommit,
+        commits: lifecycleResult.commits,
         verification: lifecycleResult.verification,
         resultPath,
         artifactRoot,
@@ -758,7 +966,8 @@ export const orchestrate = (
 
       if (
         lifecycleResult.verification?.decision === "retain" ||
-        lifecycleResult.result.completionSignal !== undefined
+        (!options.preparation &&
+          lifecycleResult.result.completionSignal !== undefined)
       ) {
         yield* display.status(
           label(
@@ -793,6 +1002,9 @@ export const orchestrate = (
       "info",
     );
     return {
+      stopReason: options.preparation
+        ? ("iteration-limit" as const)
+        : undefined,
       artifactRoot: options.artifactStore?.root,
       runRecordPath: journal?.path,
       iterations: allIterations,
@@ -814,6 +1026,7 @@ export const orchestrate = (
                 Array.from(Cause.defects(exit.cause)).some(
                   (error) => error instanceof ExecutionTerminationError,
                 ),
+              Exit.isSuccess(exit) ? exit.value.stopReason : undefined,
             ),
           )
         : Effect.void,

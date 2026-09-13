@@ -103,7 +103,7 @@ A silence-based grace window that takes over from the **idle timeout** once a **
 _Avoid_: "grace period" (too generic), "post-completion timeout", "completion grace window", "drain timeout"
 
 **Structured output**:
-A schema-validated JSON payload emitted by the **agent** inside a caller-specified XML tag and returned to the caller of `run()`. Configured via `output: Output.object({ tag, schema })`. Orthogonal to the **completion signal** -- a run can use either, both, or neither. The caller owns the prompt-side instruction telling the agent to emit the tag; Sandcastle does not inject it, and `run()` errors early if the resolved prompt does not contain the configured tag.
+A schema-validated JSON payload emitted by the **agent** inside a caller-specified XML tag and returned to the caller of `run()`. Configured via legacy `output: Output.object({ tag, schema })` after a single run, or `iterationOutput` before each verified merge. Native iteration output is returned on `iterations[]`. Orthogonal to the **completion signal** -- a run can use either, both, or neither. The caller owns the prompt-side instruction telling the agent to emit the tag; Sandcastle does not inject it, and `run()` errors early if the resolved prompt does not contain the configured tag.
 _Avoid_: "output payload", "result", "JSON output"
 
 **Output schema**:
@@ -231,3 +231,11 @@ The host `run.json` that links iteration identities, candidate/merged commits, a
 ## Candidate verification
 
 An opt-in host check after execution and evidence export, before a candidate is merged. The host supplies the iteration identity, candidate/target revisions and durable result references. An accept decision permits a fast-forward of the checked commit; retain preserves the source and stops. Business outcome data is opaque to Sandcastle. A verification decision and successful process exit do not themselves certify a project's acceptance criteria.
+
+## Host preparation
+
+A bounded command that decides whether the next agent iteration should run against an exact target snapshot. It returns run/no-work/blocked and optional opaque metadata. The host generates the iteration identity before preparation; a no-work check is a preparation record, not an agent iteration. In a prepared run, a completion signal ends agent execution while the host queue decision controls progression.
+
+## Iteration handoff
+
+A host-generated prompt context binding an iteration ID and preparation metadata to the actual source branch, target baseline and artifact paths. It is appended after prompt expansion so metadata cannot become executable prompt input. It does not declare acceptance or successful persistence.

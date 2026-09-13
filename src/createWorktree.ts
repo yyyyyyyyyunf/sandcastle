@@ -1,3 +1,10 @@
+import type { OutputDefinition } from "./Output.js";
+import {
+  validatePreparation,
+  type PreparationOptions,
+  type PreparationDecision,
+  type RunStopReason,
+} from "./Preparation.js";
 import {
   assertVerificationGit,
   validateVerification,
@@ -135,6 +142,8 @@ export interface WorktreeInteractiveOptions {
 }
 
 export interface WorktreeRunOptions {
+  readonly preparation?: PreparationOptions;
+  readonly iterationOutput?: OutputDefinition;
   readonly verification?: VerificationOptions;
   readonly artifacts?: ArtifactOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")) */
@@ -181,7 +190,8 @@ export interface WorktreeRunOptions {
 }
 
 export interface WorktreeRunResult {
-  readonly stopReason?: "retained";
+  readonly stopReason?: RunStopReason;
+  readonly preparation?: PreparationDecision;
   readonly artifactRoot?: string;
   readonly runRecordPath?: string;
   readonly preservedWorktreePaths?: string[];
@@ -530,6 +540,7 @@ export const createWorktree = async (
     // If signal is already aborted, reject immediately without any setup
     opts.signal?.throwIfAborted();
     resolveAgentTimeouts(opts);
+    validatePreparation(opts);
     validateVerification(
       opts.verification,
       isMergeToHead ? "merge-to-head" : "branch",
@@ -742,6 +753,12 @@ export const createWorktree = async (
           recovery,
           artifactStore,
           verification: opts.verification,
+          preparation: opts.preparation,
+          iterationOutput: opts.iterationOutput,
+          promptTemplate:
+            !isInlinePrompt && (opts.preparation || opts.iterationOutput)
+              ? { text: rawPrompt, args: userArgs }
+              : undefined,
           onRetainWorktree: () => {
             preserveWorktree = true;
           },

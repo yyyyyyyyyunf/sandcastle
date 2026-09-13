@@ -1,3 +1,8 @@
+import type {
+  PreparationContext,
+  PreparationDecision,
+  RunStopReason,
+} from "./Preparation.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { open, rename, stat } from "node:fs/promises";
@@ -19,6 +24,12 @@ export interface RecordedIteration {
   readonly artifactRoot: string;
   worktreePath?: string;
   sourceBranch?: string;
+  targetBranch?: string;
+  targetCommit?: string;
+  metadata?: unknown;
+  output?: unknown;
+  rawResultPath?: string;
+  resultPath?: string;
   candidateCommit?: string;
   mergedCommit?: string;
   verification?: VerificationDecision;
@@ -32,9 +43,14 @@ export interface RunRecord {
   readonly version: 1;
   readonly startedAt: string;
   finishedAt?: string;
+  stopReason?: RunStopReason;
   status: "running" | "completed" | "failed";
   error?: string;
   preservedWorktreePaths: string[];
+  preparations: {
+    context: PreparationContext;
+    decision?: PreparationDecision;
+  }[];
   iterations: RecordedIteration[];
 }
 
@@ -46,6 +62,7 @@ export class RunJournal {
     startedAt: new Date().toISOString(),
     status: "running",
     preservedWorktreePaths: [],
+    preparations: [],
     iterations: [],
   };
   constructor(private readonly artifacts: ArtifactStore) {
@@ -69,10 +86,28 @@ export class RunJournal {
       );
     }
   }
-  async begin(index: number): Promise<RecordedIteration> {
-    const iterationId = randomUUID();
+  async preparing(context: PreparationContext): Promise<void> {
+    this.record.preparations.push({ context });
+    await this.save();
+  }
+  async prepared(
+    context: PreparationContext,
+    decision: PreparationDecision,
+  ): Promise<void> {
+    const record = this.record.preparations.find(
+      (item) => item.context.iterationId === context.iterationId,
+    )!;
+    record.decision = decision;
+    await this.save();
+  }
+  async begin(
+    index: number,
+    iterationId: string = randomUUID(),
+    metadata?: unknown,
+  ): Promise<RecordedIteration> {
     const attempt: RecordedIteration = {
       iterationId,
+      metadata,
       index,
       artifactRoot: join(this.artifacts.root, iterationId),
       cleanup: "pending",
@@ -106,6 +141,21 @@ export class RunJournal {
     attempt.mergedCommit = result.mergedCommit;
     attempt.commits = result.commits;
     attempt.status = "recorded";
+    await this.save();
+  }
+  async result(
+    attempt: RecordedIteration,
+    result: {
+      rawResultPath: string;
+      resultPath?: string;
+      sourceBranch: string;
+      candidateCommit: string;
+      targetBranch: string;
+      targetCommit: string;
+      output?: unknown;
+    },
+  ): Promise<void> {
+    Object.assign(attempt, result);
     await this.save();
   }
   async verified(
@@ -143,9 +193,11 @@ export class RunJournal {
     error: string | undefined,
     preservedPaths: readonly string[],
     terminationUnknown = false,
+    stopReason?: RunStopReason,
   ): Promise<void> {
     this.record.status = error === undefined ? "completed" : "failed";
     this.record.error = error;
+    this.record.stopReason = stopReason;
     this.record.finishedAt = new Date().toISOString();
     this.record.preservedWorktreePaths = [...preservedPaths];
     for (const attempt of this.record.iterations) {

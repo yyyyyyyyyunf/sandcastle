@@ -4,14 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { run, type RunResult } from "./run.js";
+import { Output } from "./Output.js";
 import { noSandbox } from "./sandboxes/no-sandbox.js";
 
 const itPosix = process.platform === "win32" ? it.skip : it;
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 
-itPosix.each(["copy", "record", "cleanup"] as const)(
-  "%s failure preserves recovery and prevents a second allocation",
-  async (fault) => {
+itPosix.each([
+  { fault: "copy", native: false },
+  { fault: "record", native: false },
+  { fault: "cleanup", native: false },
+  { fault: "copy", native: true },
+  { fault: "record", native: true },
+  { fault: "cleanup", native: true },
+] as const)(
+  "$fault failure (native=$native) preserves recovery and prevents a second allocation",
+  async ({ fault, native }) => {
     const dir = await mkdtemp(join(tmpdir(), "artifact-failure-"));
     try {
       const git = (...args: string[]) =>
@@ -35,7 +43,28 @@ itPosix.each(["copy", "record", "cleanup"] as const)(
       const result = await run({
         cwd: dir,
         sandbox: noSandbox(),
-        prompt: "fixture",
+        prompt: "fixture <result>",
+        ...(native
+          ? {
+              preparation: {
+                command: [
+                  process.execPath,
+                  "-e",
+                  "console.log(JSON.stringify({version:1,decision:'run'}))",
+                ],
+                timeoutSeconds: 5,
+              },
+              verification: {
+                command: [
+                  process.execPath,
+                  "-e",
+                  "console.log(JSON.stringify({version:1,decision:'accept'}))",
+                ],
+                timeoutSeconds: 5,
+              },
+              iterationOutput: Output.string({ tag: "result" }),
+            }
+          : {}),
         maxIterations: 2,
         branchStrategy: { type: "merge-to-head" },
         artifacts: { root: ".sandcastle/evidence", paths: ["acceptance/runs"] },
@@ -45,7 +74,7 @@ itPosix.each(["copy", "record", "cleanup"] as const)(
           captureSessions: false,
           buildPrintCommand: () => {
             allocations++;
-            const script = `const fs = require('node:fs'); const cp = require('node:child_process'); fs.mkdirSync('acceptance/runs', {recursive: true}); fs.writeFileSync('acceptance/runs/proof.log', 'evidence'); fs.writeFileSync('delivery.txt', 'candidate'); cp.execFileSync('git', ['add', 'delivery.txt']); cp.execFileSync('git', ['commit', '-m', 'candidate']); ${inject}`;
+            const script = `const fs = require('node:fs'); const cp = require('node:child_process'); fs.mkdirSync('acceptance/runs', {recursive: true}); fs.writeFileSync('acceptance/runs/proof.log', 'evidence'); fs.writeFileSync('delivery.txt', 'candidate'); cp.execFileSync('git', ['add', 'delivery.txt']); cp.execFileSync('git', ['commit', '-m', 'candidate']); ${inject}; console.log('<result>proof</result>');`;
             return {
               command: `${quote(process.execPath)} -e ${quote(script)}`,
             };

@@ -1,3 +1,12 @@
+/** Native host preparation + verified per-iteration output protocol. */
+export const WORKFLOW_PROTOCOL_VERSION = 1 as const;
+export { PreparationError } from "./Preparation.js";
+export type {
+  PreparationOptions,
+  PreparationDecision,
+  PreparationContext,
+  RunStopReason,
+} from "./Preparation.js";
 export type { RunRecord, RecordedIteration } from "./RunJournal.js";
 export { ArtifactError } from "./Artifacts.js";
 export type { ArtifactOptions } from "./Artifacts.js";

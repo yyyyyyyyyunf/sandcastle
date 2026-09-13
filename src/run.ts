@@ -1,4 +1,10 @@
 import {
+  validatePreparation,
+  type PreparationOptions,
+  type PreparationDecision,
+  type RunStopReason,
+} from "./Preparation.js";
+import {
   assertVerificationGit,
   validateVerification,
   type VerificationOptions,
@@ -192,8 +198,17 @@ export const buildRunSummaryRows = (
 export const buildCompletionMessage = (
   completionSignal: string | undefined,
   iterationsRun: number,
-  stopReason?: "retained",
+  stopReason?: RunStopReason,
 ): { readonly message: string; readonly severity: Severity } => {
+  if (
+    stopReason === "no-work" ||
+    stopReason === "blocked" ||
+    stopReason === "iteration-limit"
+  )
+    return {
+      message: `Run stopped: ${stopReason} after ${iterationsRun} iteration(s).`,
+      severity: stopReason === "no-work" ? "success" : "warn",
+    };
   if (stopReason === "retained")
     return {
       message: "Run stopped: verification retained the candidate for review.",
@@ -352,6 +367,8 @@ export interface Timeouts {
 }
 
 export interface RunOptions<A extends AgentProvider = AgentProvider> {
+  readonly preparation?: PreparationOptions;
+  readonly iterationOutput?: OutputDefinition;
   readonly verification?: VerificationOptions;
   /** Evidence directories copied to a unique host location before merge/cleanup. */
   readonly artifacts?: ArtifactOptions;
@@ -469,7 +486,8 @@ export type ResumeRunResultOptions = Omit<
 >;
 
 export interface RunResult {
-  readonly stopReason?: "retained";
+  readonly stopReason?: RunStopReason;
+  readonly preparation?: PreparationDecision;
   readonly runRecordPath?: string;
   readonly artifactRoot?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
@@ -530,6 +548,7 @@ export async function run(
   // If signal is already aborted, reject immediately without any setup
   options.signal?.throwIfAborted();
   resolveAgentTimeouts(options);
+  validatePreparation(options);
   const recovery = createRunRecovery();
 
   const {
@@ -801,6 +820,12 @@ export async function run(
       recovery,
       artifactStore,
       verification: options.verification,
+      preparation: options.preparation,
+      iterationOutput: options.iterationOutput,
+      promptTemplate:
+        !isInlinePrompt && (options.preparation || options.iterationOutput)
+          ? { text: rawPrompt, args: userArgs }
+          : undefined,
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       executionTimeoutSeconds: options.executionTimeoutSeconds,
       completionTimeoutSeconds: options.completionTimeoutSeconds,
@@ -950,7 +975,7 @@ export async function run(
           output: retryOutput,
         } as RunOptions);
       }
-      throw error;
+      throw withRunRecovery(error, recovery);
     }
   }
 

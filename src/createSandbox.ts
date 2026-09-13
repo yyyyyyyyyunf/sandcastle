@@ -1,3 +1,10 @@
+import type { OutputDefinition } from "./Output.js";
+import {
+  validatePreparation,
+  type PreparationOptions,
+  type PreparationDecision,
+  type RunStopReason,
+} from "./Preparation.js";
 import {
   assertVerificationGit,
   validateVerification,
@@ -154,6 +161,8 @@ export interface ResumeSandboxRunResultOptions {
 }
 
 export interface SandboxRunOptions extends ResumeSandboxRunResultOptions {
+  readonly preparation?: PreparationOptions;
+  readonly iterationOutput?: OutputDefinition;
   readonly verification?: VerificationOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")). */
   readonly agent: AgentProvider;
@@ -178,7 +187,8 @@ export interface SandboxRunOptions extends ResumeSandboxRunResultOptions {
 }
 
 export interface SandboxRunResult {
-  readonly stopReason?: "retained";
+  readonly stopReason?: RunStopReason;
+  readonly preparation?: PreparationDecision;
   readonly artifactRoot?: string;
   readonly runRecordPath?: string;
   readonly preservedWorktreePaths?: string[];
@@ -361,6 +371,7 @@ const buildSandboxHandle = (
       // If signal is already aborted, reject immediately without any setup
       runOptions.signal?.throwIfAborted();
       resolveAgentTimeouts(runOptions);
+      validatePreparation(runOptions);
       validateVerification(
         runOptions.verification,
         mergeToHead ? "merge-to-head" : "branch",
@@ -522,6 +533,13 @@ const buildSandboxHandle = (
               recovery,
               artifactStore,
               verification: runOptions.verification,
+              preparation: runOptions.preparation,
+              iterationOutput: runOptions.iterationOutput,
+              promptTemplate:
+                !isInlinePrompt &&
+                (runOptions.preparation || runOptions.iterationOutput)
+                  ? { text: rawPrompt, args: userArgs }
+                  : undefined,
               onRetainWorktree: () => ctx.onPreserveWorktree?.(),
               idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
               executionTimeoutSeconds: runOptions.executionTimeoutSeconds,

@@ -725,6 +725,65 @@ Write one JSON decision to stdout: `{"version":1,"decision":"accept","outcome":{
 
 Only the accepted SHA can be fast-forwarded. Git reference transactions check and lock source/target HEADs and commits through the update, so a later target change cannot become a new implicit baseline. Guarded execution requires Git 2.30+, artifacts and explicit merge-to-head; head and named-branch modes are rejected. Windows guarded execution is currently unsupported. `worktree.run()` and a sandbox nested in a merge-to-head worktree support the same option. The guarded update uses Git plumbing and does not run porcelain-only `post-merge` hooks. A failure after checkout starts may require recovery of the target working directory; retained source and journal references remain available. See [ADR 0021](docs/adr/0021-verify-before-merge.md).
 
+#### Native queue preparation and per-iteration output
+
+`run()`, `worktree.run()` and `sandbox.run()` accept `preparation` and `iterationOutput` alongside verification. These options require the verified merge/artifact configuration above. A reusable project entry can point to shared commands; Sandcastle owns the iteration loop.
+
+```ts
+import { run, Output, WORKFLOW_PROTOCOL_VERSION } from "@ai-hero/sandcastle";
+
+if (WORKFLOW_PROTOCOL_VERSION !== 1)
+  throw new Error("Unsupported workflow protocol");
+const result = await run({
+  // agent, sandbox, explicit promptFile and project-specific limits
+  maxIterations: 20,
+  branchStrategy: { type: "merge-to-head" },
+  artifacts: { root: ".sandcastle/evidence", paths: ["acceptance/runs"] },
+  preparation: {
+    command: [
+      process.execPath,
+      sharedCommand,
+      "prepare",
+      "--config",
+      configPath,
+    ],
+    timeoutSeconds: 30,
+  },
+  verification: {
+    command: [
+      process.execPath,
+      sharedCommand,
+      "verify",
+      "--config",
+      configPath,
+    ],
+    timeoutSeconds: 30,
+  },
+  iterationOutput: Output.object({
+    tag: "workflow-result",
+    schema: sharedOutputSchema,
+  }),
+});
+console.log(
+  result.stopReason,
+  result.iterations.map((iteration) => iteration.output),
+);
+```
+
+Before allocating each iteration, the host generates an `iterationId` and records a `PreparationContext`: `version: 1`, that ID, `hostRepoDir`, `targetBranch` and the exact `targetCommit`. The argv command runs in the host repository, receives this JSON on stdin and must write one JSON object: `{"version":1,"decision":"run","metadata":{...}}`, `{"version":1,"decision":"no-work"}` or `{"version":1,"decision":"blocked","metadata":{...}}`. Metadata is optional and opaque. No-work and blocked return without agent invocation or a new worktree; their metadata remains on `result.preparation`. A separately created worktree or sandbox remains caller-owned.
+
+Both host commands use the same bounded process transport: a finite positive `timeoutSeconds`, a 1 MiB stdout limit, strict single JSON response, and confirmed termination on timeout/abort. `PreparationError.kind` distinguishes configuration, command, protocol, timeout and changed-baseline failures. Prepared target identity is checked before allocation and again after hooks/prompt expansion, before invoking the agent. Source identity must still match the prepared baseline.
+
+Native mode appends a JSON `<sandcastle-iteration-context>` block after prompt expansion. It contains the host iteration ID, original metadata, actual allocated `sourceBranch`, `targetBranch`, `targetCommit`, `hostRepoDir`, `worktreePath`, `sandboxRepoDir`, `artifactRoot`, and optional `outputTag`. Less-than characters inside JSON are escaped without changing the decoded metadata. Inline prompt text remains literal; file `SOURCE_BRANCH`/`TARGET_BRANCH` placeholders use the actual iteration identity, and argument values cannot introduce executable prompt expressions. Callers still supply the instructions and schema meaning.
+
+After confirmed agent termination and artifact export, the host saves `<iterationId>.raw.json` before extracting the configured output tag. Successful extraction writes `<iterationId>.result.json` with `output`, identity, metadata, revisions and stdout/session/usage data. Verification receives this result path plus the unchanged metadata. Only an accepted candidate can merge. Missing/invalid output fails before verification or merge and preserves the source, raw output and recovery record. There is no implicit extraction retry; `iterationOutput.maxRetries` must be zero. A failed later iteration retains all earlier completed iteration references on the error.
+
+Each `IterationResult` includes its metadata, validated output, source/target/candidate/merged revisions, commits and result/artifact paths. The run journal records preparations separately from actual iterations, including a final no-work decision. It persists each result, verification and cleanup outcome before preparing another task. Copy, record, cleanup or verification errors stop progression.
+
+With preparation enabled, a completion signal still controls process shutdown grace, but an accepted iteration returns to host preparation. The host queue decides when work is exhausted. `stopReason` is `no-work`, `blocked`, `retained`, or `iteration-limit`; reaching the iteration bound never claims the queue is empty. A prepared run cannot resume/fork a prior task session. Without preparation, existing completion-signal loop behavior remains.
+
+Legacy `output` retains its single-iteration, typed `RunResult.output` and post-run resumption/retry behavior. It cannot be mixed with verification or native iteration options; use `iterationOutput` for checks before merge. Legacy final extraction errors now carry available run recovery references, but its post-run retries are separate runs, not the native verified queue protocol. See [ADR 0022](docs/adr/0022-native-prepared-iterations.md).
+
 #### Silent tools and execution deadlines
 
 Idle detection observes nonempty stdout/stderr chunks before line buffering or agent parsing. Output without a newline, stderr and unparseable lines all count as activity. A process that is merely alive does not count as progress.
