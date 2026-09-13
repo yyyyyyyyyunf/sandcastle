@@ -19,7 +19,7 @@ export interface RecordedIteration {
   mergedCommit?: string;
   commits?: { sha: string }[];
   cleanup: "pending" | "removed" | "preserved" | "caller-owned" | "failed";
-  status: "preparing" | "prepared" | "merged" | "completed";
+  status: "preparing" | "prepared" | "recorded" | "completed";
 }
 
 export interface RunRecord {
@@ -42,10 +42,7 @@ export class RunJournal {
     preservedWorktreePaths: [],
     iterations: [],
   };
-  constructor(
-    private readonly artifacts: ArtifactStore,
-    private readonly hostRepo: string,
-  ) {
+  constructor(private readonly artifacts: ArtifactStore) {
     this.path = join(artifacts.root, "run.json");
   }
   private async save(): Promise<void> {
@@ -81,6 +78,7 @@ export class RunJournal {
   }
   async allocated(attempt: RecordedIteration, worktree: string): Promise<void> {
     attempt.worktreePath = worktree;
+    await this.artifacts.assertOutsideWorktree(worktree);
     await this.save();
   }
   async capture(attempt: RecordedIteration, worktree: string): Promise<void> {
@@ -97,16 +95,11 @@ export class RunJournal {
   }
   async beforeCleanup(
     attempt: RecordedIteration,
-    result: { branch: string; commits: { sha: string }[] },
+    result: { mergedCommit?: string; commits: { sha: string }[] },
   ): Promise<void> {
-    attempt.mergedCommit = await git(
-      this.hostRepo,
-      "rev-parse",
-      "--verify",
-      `${result.branch}^{commit}`,
-    );
+    attempt.mergedCommit = result.mergedCommit;
     attempt.commits = result.commits;
-    attempt.status = "merged";
+    attempt.status = "recorded";
     await this.save();
   }
   async completed(
@@ -146,7 +139,8 @@ export class RunJournal {
         attempt.worktreePath &&
         preservedPaths.includes(attempt.worktreePath)
       ) {
-        attempt.cleanup = attempt.status === "merged" ? "failed" : "preserved";
+        attempt.cleanup =
+          attempt.status === "recorded" ? "failed" : "preserved";
         if (attempt.status === "preparing" && !terminationUnknown) {
           try {
             await this.capture(attempt, attempt.worktreePath);

@@ -145,13 +145,74 @@ itPosix.each(["run", "worktree", "sandbox"] as const)(
         ).toBe("required evidence 2");
         expect(record.iterations[0]).toMatchObject({
           candidateCommit: result.commits[0]!.sha,
-          mergedCommit: result.commits[0]!.sha,
           artifactRoot: result.iterations[0]!.artifactRoot,
           cleanup: entry === "run" ? "removed" : "caller-owned",
         });
+        expect(record.iterations[0].mergedCommit).toBe(
+          entry === "sandbox" ? undefined : result.commits[0]!.sha,
+        );
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
+    }
+  },
+);
+
+itPosix.each(["worktree", "sandbox"] as const)(
+  "%s rejects evidence inside its removable worktree, including aliases",
+  async (entry) => {
+    const dir = await mkdtemp(join(tmpdir(), "artifact-owned-root-"));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync("git", args, { cwd: dir, stdio: "pipe" });
+      git("init", "-b", "main");
+      await writeFile(join(dir, ".gitignore"), ".sandcastle/\n");
+      git("add", ".");
+      git("commit", "-m", "fixture");
+      const resource =
+        entry === "worktree"
+          ? await createWorktree({
+              cwd: dir,
+              branchStrategy: { type: "merge-to-head" },
+            })
+          : await createSandbox({
+              cwd: dir,
+              sandbox: noSandbox(),
+              branch: "candidate",
+            });
+      let calls = 0;
+      try {
+        await symlink(resource.worktreePath, join(dir, "alias"), "dir");
+        for (const root of [resource.worktreePath, join(dir, "alias")]) {
+          await expect(
+            resource.run({
+              sandbox: noSandbox(),
+              prompt: "fixture",
+              artifacts: {
+                root: join(root, ".sandcastle/evidence"),
+                paths: ["acceptance/runs"],
+              },
+              agent: {
+                name: "unused",
+                env: {},
+                captureSessions: false,
+                buildPrintCommand: () => {
+                  calls++;
+                  return { command: "true" };
+                },
+                parseStreamLine: () => [],
+              },
+            }),
+          ).rejects.toThrow(
+            "Artifact root must be outside removable worktrees",
+          );
+        }
+        expect(calls).toBe(0);
+      } finally {
+        await resource.close();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   },
 );

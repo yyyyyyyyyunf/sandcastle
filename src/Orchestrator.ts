@@ -1,7 +1,11 @@
 import { ExecutionTerminationError } from "./processTermination.js";
 import { RunJournal } from "./RunJournal.js";
 import type { ArtifactStore } from "./Artifacts.js";
-import { createRunRecovery, type RunRecovery } from "./RunRecovery.js";
+import {
+  createRunRecovery,
+  recordPreservedWorktree,
+  type RunRecovery,
+} from "./RunRecovery.js";
 import { resolveAgentTimeouts, type AgentTimeouts } from "./agentTimeouts.js";
 import { Cause, Deferred, Duration, Effect, Exit, Fiber } from "effect";
 import { AgentStreamEmitter } from "./AgentStreamEmitter.js";
@@ -355,7 +359,7 @@ export const orchestrate = (
   const agentTimeouts = resolveAgentTimeouts(options);
   const recovery = options.recovery ?? createRunRecovery();
   const journal = options.artifactStore
-    ? new RunJournal(options.artifactStore, options.hostRepoDir)
+    ? new RunJournal(options.artifactStore)
     : undefined;
   recovery.runRecordPath = journal?.path;
   return Effect.gen(function* () {
@@ -624,11 +628,8 @@ export const orchestrate = (
       );
 
       const lifecycleResult = sandboxResult.value;
-      if (
-        sandboxResult.preservedWorktreePath &&
-        !preservedWorktreePaths.includes(sandboxResult.preservedWorktreePath)
-      )
-        preservedWorktreePaths.push(sandboxResult.preservedWorktreePath);
+      if (sandboxResult.preservedWorktreePath)
+        recordPreservedWorktree(recovery, sandboxResult.preservedWorktreePath);
 
       allCommits.push(...lifecycleResult.commits);
       allStdout += lifecycleResult.result.stdout;

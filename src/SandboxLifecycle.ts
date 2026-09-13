@@ -174,6 +174,8 @@ export interface SandboxContext {
 export interface SandboxLifecycleResult<A> {
   readonly result: A;
   readonly branch: string;
+  /** Present only when this invocation actually merged into the host branch. */
+  readonly mergedCommit?: string;
   readonly commits: { sha: string }[];
 }
 
@@ -415,6 +417,7 @@ export const withSandboxLifecycle = <A>(
     // Collect commits and handle cherry-pick for temp branches
     let commits: { sha: string }[];
     let finalBranch: string;
+    let mergedCommit: string | undefined;
 
     if (hostCurrentBranch !== null) {
       // Temp branch mode: merge temp branch into host branch, then delete temp branch.
@@ -460,6 +463,11 @@ export const withSandboxLifecycle = <A>(
                 await execAsync(`git merge "${resolvedBranch}"`, {
                   cwd: hostRepoDir,
                 });
+                mergedCommit = (
+                  await execAsync("git rev-parse HEAD", {
+                    cwd: hostRepoDir,
+                  })
+                ).stdout.trim();
               } catch {
                 throw new Error(
                   `Merge of '${resolvedBranch}' onto '${hostCurrentBranch}' failed. ` +
@@ -557,5 +565,5 @@ export const withSandboxLifecycle = <A>(
       finalBranch = targetBranch;
     }
 
-    return { result, branch: finalBranch, commits };
+    return { result, branch: finalBranch, commits, mergedCommit };
   }).pipe(Effect.ensuring(sandbox.assertExecStopped?.() ?? Effect.void));

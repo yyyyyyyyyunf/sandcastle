@@ -20,6 +20,7 @@ export class ArtifactError extends Error {
 
 export interface ArtifactStore {
   readonly root: string;
+  assertOutsideWorktree(worktree: string): Promise<void>;
   capture(worktree: string, iterationId?: string): Promise<string>;
 }
 
@@ -54,6 +55,14 @@ export const createArtifactStore = async (
   const root = join(parent, randomUUID());
   await mkdir(root);
   const canonicalRoot = await realpath(root);
+  const canonicalHost = await realpath(hostRepoDir);
+  const assertOutsideWorktree = async (worktree: string): Promise<void> => {
+    const sourceRoot = await realpath(worktree);
+    if (sourceRoot !== canonicalHost && contains(sourceRoot, canonicalRoot))
+      throw new ArtifactError(
+        "Artifact root must be outside removable worktrees",
+      );
+  };
   for (const path of paths) {
     const source = await realpath(resolve(hostRepoDir, path)).catch(
       (error: NodeJS.ErrnoException) => {
@@ -68,9 +77,11 @@ export const createArtifactStore = async (
   }
   return {
     root: canonicalRoot,
+    assertOutsideWorktree,
     capture: async (worktree, iterationId = randomUUID()) => {
       const destination = join(canonicalRoot, iterationId);
       try {
+        await assertOutsideWorktree(worktree);
         await mkdir(destination);
         const sourceRoot = await realpath(worktree);
         for (const path of paths) {
