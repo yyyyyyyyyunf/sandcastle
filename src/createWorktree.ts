@@ -1,4 +1,6 @@
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
+import { FileSystem } from "@effect/platform";
+import { WorktreeError } from "./errors.js";
 import { join } from "node:path";
 import { Effect, Layer } from "effect";
 import type { AgentProvider } from "./AgentProvider.js";
@@ -57,7 +59,7 @@ import {
 import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
 import { getExecutionTerminationError } from "./executionError.js";
-import { ExecutionTerminationError } from "./processTermination.js";
+import { closeSandboxHandle } from "./sandboxShutdown.js";
 import type { Timeouts } from "./run.js";
 
 /** Branch strategies valid for createWorktree — head is excluded. */
@@ -473,18 +475,7 @@ export const createWorktree = async (
         } satisfies InteractiveResult;
       }).pipe(
         // Always close sandbox handle
-        Effect.ensuring(
-          Effect.promise(async () => {
-            try {
-              await handle.close();
-            } catch (cause) {
-              throw new ExecutionTerminationError(
-                `Sandbox shutdown failed: ${String(cause)}`,
-                { cause },
-              );
-            }
-          }),
-        ),
+        Effect.ensuring(Effect.promise(() => closeSandboxHandle(handle))),
       );
     });
 
@@ -570,55 +561,50 @@ export const createWorktree = async (
         );
       }
 
-      // 4. Start sandbox
-      let handle:
-        | BindMountSandboxHandle
-        | IsolatedSandboxHandle
-        | NoSandboxHandle;
-      let sandboxRepoDir: string;
-
-      if (sandboxProvider.tag === "isolated") {
-        const startResult = yield* startSandbox({
-          provider: sandboxProvider,
-          hostRepoDir: worktreeInfo.path,
-          env: effectiveEnv,
-        });
-        handle = startResult.handle;
-        sandboxRepoDir = startResult.worktreePath;
-      } else if (sandboxProvider.tag === "none") {
-        const startResult = yield* startSandbox({
-          provider: sandboxProvider,
-          hostRepoDir,
-          env: effectiveEnv,
-          worktreeOrRepoPath: worktreeInfo.path,
-        });
-        handle = startResult.handle;
-        sandboxRepoDir = startResult.worktreePath;
-      } else {
-        const gitPath = join(hostRepoDir, ".git");
-        const rawGitMounts = yield* resolveGitMounts(gitPath);
-        const gitMounts = yield* patchGitMountsForWindows(
-          rawGitMounts,
-          worktreeInfo.path,
-          SANDBOX_REPO_DIR,
+      // Each iteration owns its sandbox, while this handle owns the worktree.
+      const fileSystem = yield* FileSystem.FileSystem;
+      const startIterationSandbox = () =>
+        Effect.gen(function* () {
+          if (sandboxProvider.tag === "isolated") {
+            return yield* startSandbox({
+              provider: sandboxProvider,
+              hostRepoDir: worktreeInfo.path,
+              env: effectiveEnv,
+            });
+          }
+          if (sandboxProvider.tag === "none") {
+            return yield* startSandbox({
+              provider: sandboxProvider,
+              hostRepoDir,
+              env: effectiveEnv,
+              worktreeOrRepoPath: worktreeInfo.path,
+            });
+          }
+          const rawGitMounts = yield* resolveGitMounts(
+            join(hostRepoDir, ".git"),
+          );
+          const gitMounts = yield* patchGitMountsForWindows(
+            rawGitMounts,
+            worktreeInfo.path,
+            SANDBOX_REPO_DIR,
+          );
+          return yield* startSandbox({
+            provider: sandboxProvider,
+            hostRepoDir,
+            env: effectiveEnv,
+            worktreeOrRepoPath: worktreeInfo.path,
+            gitMounts,
+            repoDir: SANDBOX_REPO_DIR,
+          });
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.catchTags({
+            SystemError: (error) =>
+              Effect.fail(new WorktreeError({ message: String(error) })),
+            BadArgument: (error) =>
+              Effect.fail(new WorktreeError({ message: String(error) })),
+          }),
         );
-        const startResult = yield* startSandbox({
-          provider: sandboxProvider,
-          hostRepoDir,
-          env: effectiveEnv,
-          worktreeOrRepoPath: worktreeInfo.path,
-          gitMounts,
-          repoDir: SANDBOX_REPO_DIR,
-        });
-        handle = startResult.handle;
-        sandboxRepoDir = startResult.worktreePath;
-      }
-
-      const sandbox = makeSandboxFromHandle(handle);
-      const applyToHost =
-        sandboxProvider.tag === "isolated"
-          ? () => syncOut(worktreeInfo.path, handle as IsolatedSandboxHandle)
-          : () => Effect.void;
 
       // 5. Resolve logging
       const resolvedLogging: LoggingOption = opts.logging ?? {
@@ -646,31 +632,39 @@ export const createWorktree = async (
             })()
           : ClackDisplay.layer;
 
-      // Pre-narrow the bind-mount handle for the orchestrator's session-capture
-      // path. Gated on the provider tag so we never hand a NoSandbox/Isolated
-      // handle (which lack copyFileIn/copyFileOut) to AgentSessionStorage.
-      const bindMountHandle =
-        sandboxProvider.tag === "bind-mount"
-          ? (handle as BindMountSandboxHandle)
-          : undefined;
-
-      // 6. Build a SandboxFactory that reuses the started sandbox
       const reuseFactoryLayer = Layer.succeed(SandboxFactory, {
         withSandbox: (makeEffect) =>
-          makeEffect(
-            {
-              hostWorktreePath: worktreeInfo.path,
-              sandboxRepoPath: sandboxRepoDir,
-              applyToHost,
-              bindMountHandle,
-            },
-            sandbox,
+          Effect.acquireUseRelease(
+            startIterationSandbox(),
+            ({ handle, sandbox, worktreePath: sandboxRepoDir }) =>
+              makeEffect(
+                {
+                  hostWorktreePath: worktreeInfo.path,
+                  sandboxRepoPath: sandboxRepoDir,
+                  applyToHost:
+                    sandboxProvider.tag === "isolated"
+                      ? () =>
+                          syncOut(
+                            worktreeInfo.path,
+                            handle as IsolatedSandboxHandle,
+                          )
+                      : () => Effect.void,
+                  bindMountHandle:
+                    sandboxProvider.tag === "bind-mount"
+                      ? (handle as BindMountSandboxHandle)
+                      : undefined,
+                  finalizeSandbox: () =>
+                    Effect.promise(() => closeSandboxHandle(handle)),
+                },
+                sandbox,
+              ),
+            ({ handle }) => Effect.promise(() => closeSandboxHandle(handle)),
           ).pipe(
             Effect.map((value) => ({
               value,
               preservedWorktreePath: undefined,
             })),
-          ) as any,
+          ),
       });
 
       const streamEmitterLayer = agentStreamEmitterLayer(
@@ -722,22 +716,7 @@ export const createWorktree = async (
         }
 
         return orchestrateResult;
-      }).pipe(
-        Effect.provide(runLayer),
-        // Always close sandbox handle
-        Effect.ensuring(
-          Effect.promise(async () => {
-            try {
-              await handle.close();
-            } catch (cause) {
-              throw new ExecutionTerminationError(
-                `Sandbox shutdown failed: ${String(cause)}`,
-                { cause },
-              );
-            }
-          }),
-        ),
-      );
+      }).pipe(Effect.provide(runLayer));
 
       return {
         iterations: result.iterations,

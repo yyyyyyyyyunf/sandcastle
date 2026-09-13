@@ -673,6 +673,8 @@ On macOS/Linux, `noSandbox()` gives each exec invocation its own process group. 
 
 Provider handles opt into this contract with `supportsExecCancellation: true` and implement `ExecOptions.signal`. Sandcastle waits up to 7 seconds for cancellation to settle. An unsupported provider, an unconfirmed stop, or a failed sandbox shutdown raises `ExecutionTerminationError`; affected worktrees are preserved. Completion grace cannot turn an unknown termination state into success. Other built-in providers have not opted in yet; Windows uses best-effort `taskkill /T /F` and does not claim confirmed cancellation.
 
+`run()` and `worktree.run()` finish each iteration-owned sandbox after sync-out and before merging or deleting its source branch. Shutdown is attempted once per handle and has a 7-second deadline. `worktree.run()` retains the worktree across iterations and starts a fresh sandbox for each one. Reusable `createSandbox()` handles remain open until their caller closes them; termination failures preserve their owning worktree through that close.
+
 A clean process exit always wins the race, so healthy runs gain zero added latency. The completion timeout only matters when the process hangs.
 
 Tune the window with `completionTimeoutSeconds`:

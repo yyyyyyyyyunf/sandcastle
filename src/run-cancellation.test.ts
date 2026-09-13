@@ -13,21 +13,77 @@ import { noSandbox } from "./sandboxes/no-sandbox.js";
 const itPosix = process.platform === "win32" ? it.skip : it;
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
-itPosix.each([
-  "idle",
-  "abort",
-  "completion",
-  "resists-term",
-  "unsupported",
-  "unsupported-abort",
-  "worktree-unsupported-abort",
-  "worktree-sandbox-unsupported-abort",
-  "sandbox-unsupported-abort",
-  "close-fails",
-] as const)(
-  "%s stops the real agent descendant before run settles",
-  async (mode) => {
-    const unsupported = mode.includes("unsupported");
+interface CancellationCase {
+  name: string;
+  entry?: "run" | "worktree" | "sandbox" | "worktree-sandbox";
+  stop: "idle" | "abort" | "completion" | "normal";
+  unsupported?: boolean;
+  resistsTerm?: boolean;
+  shutdown?: "fails" | "hangs";
+}
+const cases: CancellationCase[] = [
+  { name: "idle stops descendants", stop: "idle" },
+  { name: "abort stops descendants", stop: "abort" },
+  { name: "completion grace stops descendants", stop: "completion" },
+  {
+    name: "SIGTERM resistance requires escalation",
+    stop: "idle",
+    resistsTerm: true,
+  },
+  {
+    name: "unsupported completion preserves candidate",
+    stop: "completion",
+    unsupported: true,
+  },
+  {
+    name: "abort does not hide unknown termination",
+    stop: "abort",
+    unsupported: true,
+  },
+  {
+    name: "worktree run preserves unknown termination",
+    entry: "worktree",
+    stop: "abort",
+    unsupported: true,
+  },
+  {
+    name: "nested sandbox preserves its owning worktree",
+    entry: "worktree-sandbox",
+    stop: "abort",
+    unsupported: true,
+  },
+  {
+    name: "sandbox run preserves unknown termination",
+    entry: "sandbox",
+    stop: "abort",
+    unsupported: true,
+  },
+  {
+    name: "shutdown failure prevents merge",
+    stop: "normal",
+    shutdown: "fails",
+  },
+  {
+    name: "worktree shutdown failure prevents merge",
+    entry: "worktree",
+    stop: "normal",
+    shutdown: "fails",
+  },
+  {
+    name: "unresponsive shutdown has a deadline and prevents merge",
+    stop: "normal",
+    shutdown: "hangs",
+  },
+];
+itPosix.each(cases)(
+  "$name",
+  async ({
+    entry = "run",
+    stop,
+    unsupported = false,
+    resistsTerm = false,
+    shutdown,
+  }) => {
     let resource: { close(): Promise<unknown> } | undefined;
     const dir = await mkdtemp(join(tmpdir(), "run-cancel-"));
     let pid: number | undefined;
@@ -46,13 +102,13 @@ itPosix.each([
         `
       const fs = require('node:fs');
       const root = ${JSON.stringify(dir)};
-      ${mode === "resists-term" ? "process.on('SIGTERM', () => fs.writeFileSync('term-received', 'yes'));" : ""}
+      ${resistsTerm ? "process.on('SIGTERM', () => fs.writeFileSync('term-received', 'yes'));" : ""}
       fs.writeFileSync(root + '/pid', String(process.pid));
       fs.writeFileSync(root + '/heartbeat', 'start');
       setInterval(() => fs.appendFileSync(root + '/heartbeat', '.'), 10);
-      ${unsupported ? "fs.writeFileSync('delivery.txt', 'candidate'); require('node:child_process').execFileSync('git', ['add', 'delivery.txt']); require('node:child_process').execFileSync('git', ['commit', '-m', 'candidate']);" : ""}
-      console.log(${JSON.stringify(mode === "completion" || unsupported ? "<promise>COMPLETE</promise>" : "ready")});
-      setTimeout(() => process.exit(0), ${mode === "close-fails" ? 300 : 10000});
+      ${unsupported || shutdown !== undefined ? "fs.writeFileSync('delivery.txt', 'candidate'); require('node:child_process').execFileSync('git', ['add', 'delivery.txt']); require('node:child_process').execFileSync('git', ['commit', '-m', 'candidate']);" : ""}
+      console.log(${JSON.stringify(stop === "completion" || unsupported ? "<promise>COMPLETE</promise>" : "ready")});
+      setTimeout(() => process.exit(0), ${shutdown !== undefined ? 300 : 10000});
     `,
       );
       await writeFile(
@@ -73,10 +129,7 @@ itPosix.each([
           command: `${quote(process.execPath)} parent.cjs`,
         }),
         parseStreamLine: (text) => {
-          if (
-            mode === "abort" ||
-            (mode.endsWith("unsupported-abort") && text.includes("<promise>"))
-          )
+          if (stop === "abort" && (!unsupported || text.includes("<promise>")))
             abort.abort(new Error("user cancelled fixture"));
           return [{ type: "text", text }];
         },
@@ -105,7 +158,7 @@ itPosix.each([
               };
             },
           }
-        : mode === "close-fails"
+        : shutdown !== undefined
           ? {
               ...native,
               create: async (options: Parameters<typeof native.create>[0]) => {
@@ -114,7 +167,9 @@ itPosix.each([
                   ...handle,
                   close: async () => {
                     await handle.close();
-                    throw new Error("fixture shutdown failed");
+                    if (shutdown === "fails")
+                      throw new Error("fixture shutdown failed");
+                    await new Promise<void>(() => {});
                   },
                 };
               },
@@ -125,54 +180,55 @@ itPosix.each([
         sandbox,
         agent,
         prompt: "fixture",
-        branchStrategy:
-          mode === "close-fails"
-            ? { type: "branch" as const, branch: "candidate" }
-            : {
-                type: unsupported
-                  ? ("merge-to-head" as const)
-                  : ("head" as const),
-              },
+        branchStrategy: {
+          type:
+            unsupported || shutdown !== undefined
+              ? ("merge-to-head" as const)
+              : ("head" as const),
+        },
         maxIterations: 1 as const,
-        idleTimeoutSeconds: mode === "idle" || mode === "resists-term" ? 1 : 5,
+        idleTimeoutSeconds: stop === "idle" || resistsTerm ? 1 : 5,
         completionTimeoutSeconds: 0.1,
         signal: abort.signal,
       };
-      const execution = mode.startsWith("worktree-")
-        ? (async () => {
-            const wt = await createWorktree({
-              cwd: dir,
-              branchStrategy: { type: "merge-to-head" },
-            });
-            resource = wt;
-            if (mode.startsWith("worktree-sandbox-")) {
-              const sb = await wt.createSandbox({ sandbox });
-              resource = {
-                close: async () => {
-                  await sb.close();
-                  return wt.close();
-                },
-              };
-              return { result: sb.run(runOptions) };
-            }
-            return { result: wt.run(runOptions) };
-          })().then(({ result }) => result)
-        : mode.startsWith("sandbox-")
+      const execution =
+        entry === "worktree" || entry === "worktree-sandbox"
           ? (async () => {
-              const sb = await createSandbox({
+              const wt = await createWorktree({
                 cwd: dir,
-                sandbox,
-                branch: "candidate",
+                branchStrategy: { type: "merge-to-head" },
               });
-              resource = sb;
-              return { result: sb.run(runOptions) };
+              resource = wt;
+              if (entry === "worktree-sandbox") {
+                const sb = await wt.createSandbox({ sandbox });
+                resource = {
+                  close: async () => {
+                    await sb.close();
+                    return wt.close();
+                  },
+                };
+                return { result: sb.run(runOptions) };
+              }
+              return { result: wt.run(runOptions) };
             })().then(({ result }) => result)
-          : run(runOptions);
-      if (unsupported || mode === "close-fails") {
+          : entry === "sandbox"
+            ? (async () => {
+                const sb = await createSandbox({
+                  cwd: dir,
+                  sandbox,
+                  branch: "candidate",
+                });
+                resource = sb;
+                return { result: sb.run(runOptions) };
+              })().then(({ result }) => result)
+            : run(runOptions);
+      if (unsupported || shutdown !== undefined) {
         await expect(execution).rejects.toThrow(
           unsupported
             ? "Provider does not support confirmed exec cancellation"
-            : "fixture shutdown failed",
+            : shutdown === "fails"
+              ? "fixture shutdown failed"
+              : "Shutdown did not finish within 7 seconds",
         );
         if (resource) await resource.close();
         expect(git("rev-parse", "HEAD").toString().trim()).toBe(initialHead);
@@ -182,13 +238,13 @@ itPosix.each([
             .match(/^worktree /gm),
         ).toHaveLength(2);
         return;
-      } else if (mode === "completion") {
+      } else if (stop === "completion") {
         expect((await execution).completionSignal).toBe(
           "<promise>COMPLETE</promise>",
         );
       } else {
         await expect(execution).rejects.toThrow(
-          mode === "abort" ? "user cancelled fixture" : "Agent idle",
+          stop === "abort" ? "user cancelled fixture" : "Agent idle",
         );
       }
       pid = Number(await readFile(join(dir, "pid"), "utf8"));
@@ -196,7 +252,7 @@ itPosix.each([
       const before = await readFile(join(dir, "heartbeat"), "utf8");
       await delay(100);
       expect(await readFile(join(dir, "heartbeat"), "utf8")).toBe(before);
-      if (mode === "resists-term")
+      if (resistsTerm)
         expect(await readFile(join(dir, "term-received"), "utf8")).toBe("yes");
     } finally {
       fixtureCleanup.abort();
@@ -213,4 +269,5 @@ itPosix.each([
       await rm(dir, { recursive: true, force: true });
     }
   },
+  15000,
 );

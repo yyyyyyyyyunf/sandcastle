@@ -141,6 +141,7 @@ export const runHostHooks = (
   });
 
 export interface SandboxLifecycleOptions {
+  readonly finalizeSandbox?: () => Effect.Effect<void>;
   readonly hostRepoDir: string;
   readonly sandboxRepoDir: string;
   readonly hooks?: SandboxHooks;
@@ -401,6 +402,9 @@ export const withSandboxLifecycle = <A>(
         () => options.applyToHost!(),
       );
     }
+
+    // Iteration-owned sandboxes must finish before modifying the target ref.
+    yield* options.finalizeSandbox?.() ?? Effect.void;
 
     // Collect commits and handle cherry-pick for temp branches
     let commits: { sha: string }[];

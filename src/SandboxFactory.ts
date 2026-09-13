@@ -26,6 +26,7 @@ import type {
   ExecOptions,
 } from "./SandboxProvider.js";
 import { ExecutionTerminationError } from "./processTermination.js";
+import { closeSandboxHandle } from "./sandboxShutdown.js";
 import { runHostHooks, type SandboxHooks } from "./SandboxLifecycle.js";
 import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
@@ -203,6 +204,8 @@ export const makeSandboxFromHandle = (
 export const SANDBOX_REPO_DIR = "/home/agent/workspace";
 
 export interface SandboxInfo {
+  /** Finish an iteration-owned sandbox after sync-out and before host merge. */
+  readonly finalizeSandbox?: () => Effect.Effect<void>;
   /** Host-side path to the worktree directory (worktree/branch mode only). */
   readonly hostWorktreePath?: string;
   /** Absolute path to the worktree inside the sandbox, as reported by the provider. */
@@ -444,23 +447,18 @@ export const WorktreeDockerSandboxFactory = {
                       env,
                       worktreeOrRepoPath: hostRepoDir,
                     }),
-                    ({ sandbox, worktreePath }) =>
+                    ({ sandbox, worktreePath, handle }) =>
                       makeEffect(
                         {
                           hostWorktreePath: hostRepoDir,
                           sandboxRepoPath: worktreePath,
+                          finalizeSandbox: () =>
+                            Effect.promise(() => closeSandboxHandle(handle)),
                         },
                         sandbox,
                       ) as Effect.Effect<A, E | SandboxError, R>,
                     ({ handle }) =>
-                      Effect.tryPromise({
-                        try: () => handle.close(),
-                        catch: (cause) =>
-                          new ExecutionTerminationError(
-                            `Sandbox shutdown failed: ${String(cause)}`,
-                            { cause },
-                          ),
-                      }).pipe(Effect.orDie),
+                      Effect.promise(() => closeSandboxHandle(handle)),
                   ).pipe(
                     Effect.map((value) => ({
                       value,
@@ -507,23 +505,18 @@ export const WorktreeDockerSandboxFactory = {
                         env,
                         worktreeOrRepoPath: worktreeInfo.path,
                       }),
-                      ({ sandbox, worktreePath }) =>
+                      ({ sandbox, worktreePath, handle }) =>
                         makeEffect(
                           {
                             hostWorktreePath: worktreeInfo.path,
                             sandboxRepoPath: worktreePath,
+                            finalizeSandbox: () =>
+                              Effect.promise(() => closeSandboxHandle(handle)),
                           },
                           sandbox,
                         ),
                       ({ handle }) =>
-                        Effect.tryPromise({
-                          try: () => handle.close(),
-                          catch: (cause) =>
-                            new ExecutionTerminationError(
-                              `Sandbox shutdown failed: ${String(cause)}`,
-                              { cause },
-                            ),
-                        }).pipe(Effect.orDie),
+                        Effect.promise(() => closeSandboxHandle(handle)),
                     ),
                   ),
                 ) as Effect.Effect<A, E | SandboxError, R>,
@@ -577,6 +570,8 @@ export const WorktreeDockerSandboxFactory = {
                           {
                             hostWorktreePath: worktreeInfo.path,
                             sandboxRepoPath: worktreePath,
+                            finalizeSandbox: () =>
+                              Effect.promise(() => closeSandboxHandle(handle)),
                             applyToHost: () =>
                               syncOut(
                                 worktreeInfo.path,
@@ -586,14 +581,7 @@ export const WorktreeDockerSandboxFactory = {
                           sandbox,
                         ),
                       ({ handle }) =>
-                        Effect.tryPromise({
-                          try: () => handle.close(),
-                          catch: (cause) =>
-                            new ExecutionTerminationError(
-                              `Sandbox shutdown failed: ${String(cause)}`,
-                              { cause },
-                            ),
-                        }).pipe(Effect.orDie),
+                        Effect.promise(() => closeSandboxHandle(handle)),
                     ),
                   ),
                 ) as Effect.Effect<A, E | SandboxError, R>,
@@ -656,20 +644,15 @@ export const WorktreeDockerSandboxFactory = {
                       {
                         hostWorktreePath: hostRepoDir,
                         sandboxRepoPath: worktreePath,
+                        finalizeSandbox: () =>
+                          Effect.promise(() => closeSandboxHandle(handle)),
                         bindMountHandle: handle as BindMountSandboxHandle,
                       },
                       sandbox,
                     ) as Effect.Effect<A, E | SandboxError, R>,
                   // Release
                   ({ handle }) =>
-                    Effect.tryPromise({
-                      try: () => handle.close(),
-                      catch: (cause) =>
-                        new ExecutionTerminationError(
-                          `Sandbox shutdown failed: ${String(cause)}`,
-                          { cause },
-                        ),
-                    }).pipe(Effect.orDie),
+                    Effect.promise(() => closeSandboxHandle(handle)),
                 ).pipe(
                   Effect.map((value) => ({
                     value,
@@ -752,19 +735,14 @@ export const WorktreeDockerSandboxFactory = {
                         {
                           hostWorktreePath: worktreeInfo.path,
                           sandboxRepoPath: worktreePath,
+                          finalizeSandbox: () =>
+                            Effect.promise(() => closeSandboxHandle(handle)),
                           bindMountHandle: handle as BindMountSandboxHandle,
                         },
                         sandbox,
                       ),
                     ({ handle }) =>
-                      Effect.tryPromise({
-                        try: () => handle.close(),
-                        catch: (cause) =>
-                          new ExecutionTerminationError(
-                            `Sandbox shutdown failed: ${String(cause)}`,
-                            { cause },
-                          ),
-                      }).pipe(Effect.orDie),
+                      Effect.promise(() => closeSandboxHandle(handle)),
                   ),
                 ),
               ) as Effect.Effect<A, E | SandboxError, R>,

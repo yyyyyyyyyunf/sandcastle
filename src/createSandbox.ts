@@ -60,6 +60,7 @@ import { patchGitMountsForWindows } from "./mountUtils.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
 import { registerShutdown } from "./shutdownRegistry.js";
 import { getExecutionTerminationError } from "./executionError.js";
+import { closeSandboxHandle } from "./sandboxShutdown.js";
 
 export interface CreateSandboxOptions {
   /** Explicit branch for the worktree (required). */
@@ -899,7 +900,14 @@ export const createSandboxFromWorktree = async (
     async () => {
       if (closed) return { preservedWorktreePath: undefined };
       closed = true;
-      if (providerHandle) await providerHandle.close();
+      if (providerHandle) {
+        try {
+          await closeSandboxHandle(providerHandle);
+        } catch (error) {
+          options.onPreserveWorktree?.();
+          throw error;
+        }
+      }
       return { preservedWorktreePath: undefined };
     },
   );
@@ -1096,7 +1104,7 @@ export const createSandbox = async (
     return Effect.runPromise(
       Effect.gen(function* () {
         if (providerHandle) {
-          yield* Effect.promise(() => providerHandle.close());
+          yield* Effect.promise(() => closeSandboxHandle(providerHandle));
         }
 
         const termination = yield* Effect.exit(

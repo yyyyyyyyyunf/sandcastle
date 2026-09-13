@@ -99,7 +99,7 @@ An **agent** invocation that has emitted its **completion signal** but whose und
 _Avoid_: "stuck agent" (implies stuck _mid-work_, not done-but-not-exited), "zombie process", "lingering process", "hung sandbox"
 
 **Completion timeout**:
-A silence-based grace window that takes over from the **idle timeout** once a **completion signal** is detected in the **agent**'s output. Reset by every subsequent output line so trailing data (token-usage events, terminal `result` events, **structured output** tags emitted after the signal) is still captured. On expiry the run resolves **successfully** with a warning that the process is hanging -- in contrast to **idle timeout** expiry, which fails the run. Configured via `completionTimeoutSeconds`; default 60 seconds. Independent of `idleTimeoutSeconds` -- they cover different phases.
+A silence-based grace window that takes over from the **idle timeout** once a **completion signal** is detected in the **agent**'s output. Reset by every subsequent output line so trailing data is still captured. On expiry Sandcastle requests termination; only confirmed termination permits returning buffered output. Unsupported or failed termination is an error that preserves the worktree. Configured via `completionTimeoutSeconds`; default 60 seconds. Independent of `idleTimeoutSeconds`, whose expiry terminates execution and fails the run.
 _Avoid_: "grace period" (too generic), "post-completion timeout", "completion grace window", "drain timeout"
 
 **Structured output**:

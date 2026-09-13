@@ -359,7 +359,13 @@ export const orchestrate = (
 
       const sandboxResult = yield* factory.withSandbox(
         (
-          { hostWorktreePath, sandboxRepoPath, applyToHost, bindMountHandle },
+          {
+            hostWorktreePath,
+            sandboxRepoPath,
+            applyToHost,
+            bindMountHandle,
+            finalizeSandbox,
+          },
           sandbox,
         ) =>
           withSandboxLifecycle(
@@ -370,6 +376,7 @@ export const orchestrate = (
               branch,
               hostWorktreePath,
               applyToHost,
+              finalizeSandbox,
               signal: options.signal,
               timeouts: options.timeouts,
               keepSourceBranch: options.keepSourceBranch,

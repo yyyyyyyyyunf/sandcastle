@@ -372,7 +372,8 @@ export interface RunOptions<A extends AgentProvider = AgentProvider> {
    * agent's output. The agent process is expected to exit shortly after
    * emitting the signal; if it does not (typically because a spawned child —
    * a `gh`/git subprocess or long-lived MCP server — keeps stdout open),
-   * Sandcastle force-completes the iteration with a warning. Resets on every
+   * Sandcastle requests termination and returns buffered output only after
+   * confirmation; unsupported or failed termination is an error. Resets on every
    * subsequent output line so trailing data (token-usage events, terminal
    * `result` events, structured-output tags) is still captured. Independent
    * of `idleTimeoutSeconds`. Default: 60.
