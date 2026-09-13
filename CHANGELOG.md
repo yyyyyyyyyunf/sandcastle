@@ -1,4 +1,23 @@
-# @ai-hero/sandcastle
+# @fly4ai/sandcastle
+
+## 0.13.0
+
+### Minor Changes
+
+- fbce7fb: Add executionTimeoutSeconds to run, worktree.run and sandbox.run as a fixed per-invocation deadline. Allow idleTimeoutSeconds: false for silent tools only with a finite execution deadline. Reject invalid and overflowing timer limits before execution and distinguish execution deadline errors from idle expiry.
+- 36a213f: Add optional artifact directory export and a persistent per-run JSON record to run, worktree.run and sandbox.run. Snapshot declared repository-relative evidence into unique host attempt directories before merge/cleanup, record candidate and merged commits, and stop with recovery references if export or recording fails. Support noSandbox and shared bind mounts; isolated providers report this mode as unsupported.
+- 730454c: Publish this maintained fork as @fly4ai/sandcastle. Update generated templates, examples and package metadata to use the new scope, keep the upstream attribution, and make the release workflow manually dispatched.
+- eea7ebf: Add native host preparation and per-iteration structured output before verified merge. Preserve opaque task metadata, actual source identity, raw/validated results and recovery references across iterations; distinguish no-work, blocked, retained and iteration-limit outcomes. Keep legacy single-run Output semantics separate from guarded queue execution.
+- 298ae84: Add opt-in host verification after execution and evidence export, before merging a candidate. Verification uses a bounded argv command with versioned JSON context, accepts or retains a candidate, preserves recovery state on failure, and fast-forwards the exact checked commit.
+
+### Patch Changes
+
+- f25cd1a: Propagate exec cancellation to noSandbox process groups and wait for termination before returning from idle timeout, external abort, or completion grace. Stop outstanding exec invocations on close, escalate SIGTERM when needed, and preserve worktrees when termination or provider shutdown cannot be confirmed. Provider handles may opt into the confirmed cancellation contract; unsupported providers no longer treat completion grace as verified success. Finish iteration-owned sandboxes before merge, with a bounded, shared shutdown path. Worktree runs retain their worktree and create a sandbox per iteration; reusable sandbox handles stay open until explicitly closed.
+
+  Seal completion-grace results after confirmed termination so output emitted by signal handlers remains available in the result and host verification input.
+
+- fbce7fb: Count raw stdout and stderr chunks as agent activity before line buffering or output parsing, preventing false idle timeouts for partial lines and stderr-only output. Built-in providers forward raw activity; legacy provider line streaming remains compatible.
+- 36a213f: Retain all preserved worktree references across iterations, including later failures and cleanup errors. The legacy single-path field now identifies the most recently preserved worktree even if a subsequent iteration was clean.
 
 ## 0.12.0
 
