@@ -100,4 +100,5 @@ try { cp.execFileSync(git,args,{stdio:'inherit'}); } catch(e) {process.exit(e.st
       await rm(dir, { recursive: true, force: true });
     }
   },
+  15_000,
 );
