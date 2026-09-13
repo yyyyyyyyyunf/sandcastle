@@ -19,3 +19,7 @@ Default canonical labels. Agent provider support is detailed here. See `docs/age
 ### Domain docs
 
 Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Acceptance
+
+For the AFK reliability delivery, read `docs/agents/acceptance.md` before planning or judging proof. This fork's delivery follows the supplied local plan; it does not publish to the upstream tracker.

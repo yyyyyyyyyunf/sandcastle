@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   writeFileSync,
   readFileSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,7 +46,7 @@ describe("testIsolated()", () => {
     const handle = await provider.create({ env: {} });
     try {
       const result = await handle.exec("pwd", { cwd: "/tmp" });
-      expect(result.stdout.trim()).toBe("/tmp");
+      expect(result.stdout.trim()).toBe(realpathSync("/tmp"));
     } finally {
       await handle.close();
     }

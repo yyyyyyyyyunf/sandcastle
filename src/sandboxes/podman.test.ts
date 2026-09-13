@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", async () => {
   const actual =
@@ -23,9 +23,17 @@ import type { BindMountSandboxHandle } from "../SandboxProvider.js";
 
 const mockExecFile = vi.mocked(execFile);
 const mockExecFileSync = vi.mocked(execFileSync);
+const nativePlatform = process.platform;
+
+beforeEach(() => {
+  // Generic container tests use the Linux path. Machine preflight tests below
+  // opt into their platform explicitly instead of depending on the test host.
+  Object.defineProperty(process, "platform", { value: "linux" });
+});
 
 afterEach(() => {
   mockExecFile.mockReset();
+  Object.defineProperty(process, "platform", { value: nativePlatform });
 });
 
 describe("podman()", () => {

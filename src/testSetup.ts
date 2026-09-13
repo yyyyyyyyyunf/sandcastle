@@ -11,9 +11,13 @@
  * giving every worker its own gitconfig file and eliminating cross-worker
  * lock contention.
  */
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Git and shells resolve macOS /var and /tmp aliases. Use the same physical
+// root for fixtures so path comparisons do not depend on the host's TMPDIR.
+process.env.TMPDIR = realpathSync(tmpdir());
 
 const tmpDir = mkdtempSync(join(tmpdir(), "test-gitconfig-worker-"));
 const globalConfigPath = join(tmpDir, ".gitconfig");
