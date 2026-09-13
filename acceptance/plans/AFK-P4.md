@@ -1,0 +1,16 @@
+# AFK-P4 — Verify one iteration before merging
+
+Readiness: ready. Starting implementation revision: `f3d4442`. Contract: P4 in the approved skills implementation plan; gates and seams: `docs/agents/acceptance.md`. P1 termination and P3 evidence prerequisites passed.
+
+| Criterion | Execution / expected proof                                                                                                                                                                                                                                               |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| AC-P4.1   | Public run/worktree plus scripted native agent, persistent evidence, a real host checker. Checker reads complete output and candidate after agent/provider shutdown and before target mutation/source cleanup. Include a result larger than the provider's display tail. |
+| AC-P4.2   | Accept merges checked candidate; retain stops and preserves clean source, branch and evidence. MaxIterations > 1 still executes only one agent on retain.                                                                                                                |
+| AC-P4.3   | Checker changes source or target HEAD: reject before merge, retain source. Real Git merge failure does not become success or delete the source.                                                                                                                          |
+| AC-P4.4   | Distinct retained decision, malformed protocol and command failure/timeout. Timeout/abort uses P1 process ownership and observes no continuing descendant writes after return.                                                                                           |
+
+Interface direction: opt-in `verification` with argv command and finite timeout. Versioned JSON stdin supplies host-generated iteration ID, source/target revisions and paths, durable artifacts, and complete result. JSON stdout returns accept/retain plus opaque outcome. Sandcastle understands only its generic decision. Require explicit merge-to-head and artifact configuration; reject head/named modes before agent execution because they write a delivery branch directly. Existing unguarded behavior remains compatible. Windows guarded execution remains unsupported until confirmed process ownership is available.
+
+Lifecycle captures target baseline before agent execution, preserves evidence, invokes the checker, then checks source/target state again and only fast-forwards the exact accepted revision. Reuse one owned host-process executor for noSandbox and checker argv rather than copying cancellation logic. Retain is a normal stop result, while protocol/command/Git failures are errors with recovery references. Caller-owned worktree run follows the same boundary.
+
+Proof uses real temporary repositories, native processes and Vitest; no model calls or product baseline needed. Logs: `acceptance/runs/AFK-P4/`. Independent two-axis review precedes final typecheck → build → full tests and acceptance report.
