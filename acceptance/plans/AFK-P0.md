@@ -6,7 +6,7 @@ Contract: P0 in the skills repository's approved AFK implementation plan. Indepe
 
 | Criterion | Execution and expected proof                                                                                                                                                                    |
 | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AC-P0.1   | Install with `npm ci`; execute `npm run typecheck`, `npm test`, `npm run build`; retain commands, exit status, totals, failures and skips under `acceptance/runs/AFK-P0/baseline/`              |
+| AC-P0.1   | Install with `npm ci`; execute the gates in `docs/agents/acceptance.md`; retain commands, exit status, totals, failures and skips under `acceptance/runs/AFK-P0/baseline/`                      |
 | AC-P0.2   | Existing noSandbox and lifecycle tests execute host commands and temporary Git repositories, using `src/testSetup.ts` isolation; establish their current results before adding regression tests |
 | AC-P0.3   | Both repositories now have `docs/agents/acceptance.md`; write each work package's bound plan before editing its implementation                                                                  |
 
