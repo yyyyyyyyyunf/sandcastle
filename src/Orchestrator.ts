@@ -1,5 +1,9 @@
+import { ExecutionTerminationError } from "./processTermination.js";
+import { RunJournal } from "./RunJournal.js";
+import type { ArtifactStore } from "./Artifacts.js";
+import { createRunRecovery, type RunRecovery } from "./RunRecovery.js";
 import { resolveAgentTimeouts, type AgentTimeouts } from "./agentTimeouts.js";
-import { Deferred, Duration, Effect, Fiber } from "effect";
+import { Cause, Deferred, Duration, Effect, Exit, Fiber } from "effect";
 import { AgentStreamEmitter } from "./AgentStreamEmitter.js";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
@@ -269,6 +273,8 @@ const invokeAgent = (
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
 
 export interface OrchestrateOptions {
+  readonly artifactStore?: ArtifactStore;
+  readonly recovery?: RunRecovery;
   readonly hostRepoDir: string;
   readonly iterations: number;
   readonly hooks?: SandboxHooks;
@@ -314,6 +320,7 @@ export interface OrchestrateOptions {
 
 /** Per-iteration result carrying an optional session ID. */
 export interface IterationResult {
+  readonly artifactRoot?: string;
   /** Claude Code session ID extracted from the init line, or undefined for non-Claude agents. */
   readonly sessionId?: string;
   /** Absolute host path to the captured session JSONL, or undefined when capture is disabled or provider is non-Claude. */
@@ -323,6 +330,8 @@ export interface IterationResult {
 }
 
 export interface OrchestrateResult {
+  readonly runRecordPath?: string;
+  readonly artifactRoot?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
   readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if none fired. */
@@ -330,8 +339,10 @@ export interface OrchestrateResult {
   readonly stdout: string;
   readonly commits: { sha: string }[];
   readonly branch: string;
-  /** Host path to the preserved worktree from the last iteration, set when the worktree was left behind due to uncommitted changes on a successful run. */
+  /** Most recently preserved worktree, including when a later iteration was clean. */
   readonly preservedWorktreePath?: string;
+  /** All worktrees preserved by this run, in iteration order. */
+  readonly preservedWorktreePaths: string[];
 }
 
 export const orchestrate = (
@@ -342,6 +353,11 @@ export const orchestrate = (
   SandboxFactory | Display | AgentStreamEmitter
 > => {
   const agentTimeouts = resolveAgentTimeouts(options);
+  const recovery = options.recovery ?? createRunRecovery();
+  const journal = options.artifactStore
+    ? new RunJournal(options.artifactStore, options.hostRepoDir)
+    : undefined;
+  recovery.runRecordPath = journal?.path;
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
@@ -361,10 +377,10 @@ export const orchestrate = (
       options.name ? `[${options.name}] ${msg}` : msg;
 
     const allCommits: { sha: string }[] = [];
-    const allIterations: IterationResult[] = [];
+    const allIterations = recovery.iterations;
     let allStdout = "";
     let resolvedBranch = "";
-    let iterationPreservedPath: string | undefined;
+    const preservedWorktreePaths = recovery.preservedWorktreePaths;
 
     // Helper: check abort signal and bail via defect so run() can
     // re-throw the signal's reason verbatim (no Sandcastle wrapping).
@@ -375,6 +391,10 @@ export const orchestrate = (
       yield* checkAbort();
       yield* display.status(label(`Iteration ${i}/${iterations}`), "info");
 
+      const attempt = journal
+        ? yield* Effect.promise(() => journal.begin(i))
+        : undefined;
+      const artifactRoot = attempt?.artifactRoot;
       const sandboxResult = yield* factory.withSandbox(
         (
           {
@@ -386,216 +406,245 @@ export const orchestrate = (
           },
           sandbox,
         ) =>
-          withSandboxLifecycle(
-            {
-              hostRepoDir,
-              sandboxRepoDir: sandboxRepoPath,
-              hooks,
-              branch,
-              hostWorktreePath,
-              applyToHost,
-              finalizeSandbox,
-              signal: options.signal,
-              timeouts: options.timeouts,
-              keepSourceBranch: options.keepSourceBranch,
-            },
-            sandbox,
-            (ctx) =>
-              Effect.gen(function* () {
-                // Resume session: transfer JSONL from host to sandbox before iteration 1
-                const iterationResumeSession =
-                  i === 1 ? options.resumeSession : undefined;
-                const iterationForkSession =
-                  i === 1 ? options.forkSession : undefined;
-                if (
-                  iterationResumeSession &&
-                  bindMountHandle &&
-                  provider.sessionStorage
-                ) {
-                  yield* display.status(label("Resuming session"), "info");
-                  yield* Effect.tryPromise({
-                    try: () =>
-                      provider.sessionStorage!.resumeIntoSandbox({
-                        hostCwd: hostRepoDir,
-                        sandboxCwd: ctx.sandboxRepoDir,
-                        sessionId: iterationResumeSession,
-                        handle: bindMountHandle,
-                      }),
-                    catch: (e) =>
-                      new SessionCaptureError({
-                        message: `Session resume failed: ${e instanceof Error ? e.message : String(e)}`,
-                        sessionId: iterationResumeSession,
-                      }),
-                  });
-                }
+          Effect.gen(function* () {
+            if (journal && attempt)
+              yield* Effect.promise(() =>
+                journal.allocated(attempt, hostWorktreePath ?? sandboxRepoPath),
+              );
+            const value = yield* withSandboxLifecycle(
+              {
+                hostRepoDir,
+                sandboxRepoDir: sandboxRepoPath,
+                hooks,
+                branch,
+                hostWorktreePath,
+                applyToHost,
+                finalizeSandbox,
+                preserveArtifacts:
+                  journal && attempt
+                    ? (worktree) => journal.capture(attempt, worktree)
+                    : undefined,
+                signal: options.signal,
+                timeouts: options.timeouts,
+                keepSourceBranch: options.keepSourceBranch,
+              },
+              sandbox,
+              (ctx) =>
+                Effect.gen(function* () {
+                  // Resume session: transfer JSONL from host to sandbox before iteration 1
+                  const iterationResumeSession =
+                    i === 1 ? options.resumeSession : undefined;
+                  const iterationForkSession =
+                    i === 1 ? options.forkSession : undefined;
+                  if (
+                    iterationResumeSession &&
+                    bindMountHandle &&
+                    provider.sessionStorage
+                  ) {
+                    yield* display.status(label("Resuming session"), "info");
+                    yield* Effect.tryPromise({
+                      try: () =>
+                        provider.sessionStorage!.resumeIntoSandbox({
+                          hostCwd: hostRepoDir,
+                          sandboxCwd: ctx.sandboxRepoDir,
+                          sessionId: iterationResumeSession,
+                          handle: bindMountHandle,
+                        }),
+                      catch: (e) =>
+                        new SessionCaptureError({
+                          message: `Session resume failed: ${e instanceof Error ? e.message : String(e)}`,
+                          sessionId: iterationResumeSession,
+                        }),
+                    });
+                  }
 
-                // Preprocess prompt (run !`command` expressions inside sandbox).
-                // Inline prompts pass through literally — skip expansion.
-                const fullPrompt = options.skipPromptExpansion
-                  ? prompt
-                  : yield* preprocessPrompt(
-                      prompt,
-                      ctx.sandbox,
-                      ctx.sandboxRepoDir,
+                  // Preprocess prompt (run !`command` expressions inside sandbox).
+                  // Inline prompts pass through literally — skip expansion.
+                  const fullPrompt = options.skipPromptExpansion
+                    ? prompt
+                    : yield* preprocessPrompt(
+                        prompt,
+                        ctx.sandbox,
+                        ctx.sandboxRepoDir,
+                      );
+
+                  yield* display.status(label("Agent started"), "success");
+
+                  // Invoke the agent — buffer text deltas so Pi's single-token
+                  // chunks are displayed as readable multi-word lines.
+                  const textBuffer = new TextDeltaBuffer((chunk) => {
+                    Effect.runPromise(display.textChunk(chunk));
+                    Effect.runPromise(
+                      streamEmitter.emit({
+                        type: "text",
+                        message: chunk,
+                        iteration: i,
+                        timestamp: new Date(),
+                      }),
                     );
-
-                yield* display.status(label("Agent started"), "success");
-
-                // Invoke the agent — buffer text deltas so Pi's single-token
-                // chunks are displayed as readable multi-word lines.
-                const textBuffer = new TextDeltaBuffer((chunk) => {
-                  Effect.runPromise(display.textChunk(chunk));
-                  Effect.runPromise(
-                    streamEmitter.emit({
-                      type: "text",
-                      message: chunk,
-                      iteration: i,
-                      timestamp: new Date(),
-                    }),
-                  );
-                });
-                const onText = (text: string) => {
-                  textBuffer.write(text);
-                };
-                const onToolCall = (name: string, formattedArgs: string) => {
-                  textBuffer.flush();
-                  Effect.runPromise(display.toolCall(name, formattedArgs));
-                  Effect.runPromise(
-                    streamEmitter.emit({
-                      type: "toolCall",
-                      name,
-                      formattedArgs,
-                      iteration: i,
-                      timestamp: new Date(),
-                    }),
-                  );
-                };
-                const onRawLine = (line: string) => {
-                  Effect.runPromise(
-                    streamEmitter.emit({
-                      type: "raw",
-                      line,
-                      iteration: i,
-                      timestamp: new Date(),
-                    }),
-                  );
-                };
-                const onIdleWarning = (minutes: number) => {
-                  const msg =
-                    minutes === 1
-                      ? "Agent idle for 1 minute"
-                      : `Agent idle for ${minutes} minutes`;
-                  Effect.runPromise(display.status(label(msg), "warn"));
-                };
-                const onCompletionTimeout = (timeoutMs: number) => {
-                  Effect.runPromise(
-                    display.status(
-                      label(
-                        `Completion signal seen but agent process is hanging — requesting termination after ${timeoutMs / 1000}s grace window.`,
+                  });
+                  const onText = (text: string) => {
+                    textBuffer.write(text);
+                  };
+                  const onToolCall = (name: string, formattedArgs: string) => {
+                    textBuffer.flush();
+                    Effect.runPromise(display.toolCall(name, formattedArgs));
+                    Effect.runPromise(
+                      streamEmitter.emit({
+                        type: "toolCall",
+                        name,
+                        formattedArgs,
+                        iteration: i,
+                        timestamp: new Date(),
+                      }),
+                    );
+                  };
+                  const onRawLine = (line: string) => {
+                    Effect.runPromise(
+                      streamEmitter.emit({
+                        type: "raw",
+                        line,
+                        iteration: i,
+                        timestamp: new Date(),
+                      }),
+                    );
+                  };
+                  const onIdleWarning = (minutes: number) => {
+                    const msg =
+                      minutes === 1
+                        ? "Agent idle for 1 minute"
+                        : `Agent idle for ${minutes} minutes`;
+                    Effect.runPromise(display.status(label(msg), "warn"));
+                  };
+                  const onCompletionTimeout = (timeoutMs: number) => {
+                    Effect.runPromise(
+                      display.status(
+                        label(
+                          `Completion signal seen but agent process is hanging — requesting termination after ${timeoutMs / 1000}s grace window.`,
+                        ),
+                        "warn",
                       ),
-                      "warn",
-                    ),
-                  );
-                };
-                const {
-                  result: agentOutput,
-                  sessionId,
-                  usage: streamUsage,
-                } = yield* invokeAgent(
-                  ctx.sandbox,
-                  ctx.sandboxRepoDir,
-                  fullPrompt,
-                  provider,
-                  agentTimeouts,
-                  completionSignals,
-                  onText,
-                  onToolCall,
-                  onRawLine,
-                  onIdleWarning,
-                  onCompletionTimeout,
-                  options._idleWarningIntervalMs,
-                  iterationResumeSession,
-                  iterationForkSession,
-                  options.signal,
-                );
-
-                // Flush any remaining buffered text deltas
-                textBuffer.dispose();
-
-                yield* display.status(label("Agent stopped"), "info");
-
-                // Capture session while sandbox is still alive. Usage from the
-                // stream (e.g. Codex's turn.completed) is the baseline; a
-                // session-parsed value below overrides it when available.
-                let sessionFilePath: string | undefined;
-                let usage: IterationUsage | undefined = streamUsage;
-                if (
-                  provider.captureSessions &&
-                  provider.sessionStorage &&
-                  sessionId &&
-                  bindMountHandle
-                ) {
-                  yield* display.status(label("Capturing session"), "info");
-                  yield* Effect.tryPromise({
-                    try: () =>
-                      provider.sessionStorage!.captureToHost({
-                        hostCwd: hostRepoDir,
-                        sandboxCwd: ctx.sandboxRepoDir,
-                        sessionId,
-                        handle: bindMountHandle,
-                      }),
-                    catch: (e) =>
-                      new SessionCaptureError({
-                        message: `Session capture failed: ${e instanceof Error ? e.message : String(e)}`,
-                        sessionId,
-                      }),
-                  });
-                  sessionFilePath = provider.sessionStorage.hostSessionFilePath(
-                    hostRepoDir,
-                    sessionId,
-                  );
-
-                  // Parse token usage from the captured session JSONL
-                  if (provider.parseSessionUsage) {
-                    const content = yield* Effect.promise(() =>
-                      provider
-                        .sessionStorage!.readHostSession(hostRepoDir, sessionId)
-                        .catch(() => undefined as string | undefined),
                     );
-                    if (content) {
-                      const parsedUsage = provider.parseSessionUsage(content);
-                      if (parsedUsage) usage = parsedUsage;
+                  };
+                  const {
+                    result: agentOutput,
+                    sessionId,
+                    usage: streamUsage,
+                  } = yield* invokeAgent(
+                    ctx.sandbox,
+                    ctx.sandboxRepoDir,
+                    fullPrompt,
+                    provider,
+                    agentTimeouts,
+                    completionSignals,
+                    onText,
+                    onToolCall,
+                    onRawLine,
+                    onIdleWarning,
+                    onCompletionTimeout,
+                    options._idleWarningIntervalMs,
+                    iterationResumeSession,
+                    iterationForkSession,
+                    options.signal,
+                  );
+
+                  // Flush any remaining buffered text deltas
+                  textBuffer.dispose();
+
+                  yield* display.status(label("Agent stopped"), "info");
+
+                  // Capture session while sandbox is still alive. Usage from the
+                  // stream (e.g. Codex's turn.completed) is the baseline; a
+                  // session-parsed value below overrides it when available.
+                  let sessionFilePath: string | undefined;
+                  let usage: IterationUsage | undefined = streamUsage;
+                  if (
+                    provider.captureSessions &&
+                    provider.sessionStorage &&
+                    sessionId &&
+                    bindMountHandle
+                  ) {
+                    yield* display.status(label("Capturing session"), "info");
+                    yield* Effect.tryPromise({
+                      try: () =>
+                        provider.sessionStorage!.captureToHost({
+                          hostCwd: hostRepoDir,
+                          sandboxCwd: ctx.sandboxRepoDir,
+                          sessionId,
+                          handle: bindMountHandle,
+                        }),
+                      catch: (e) =>
+                        new SessionCaptureError({
+                          message: `Session capture failed: ${e instanceof Error ? e.message : String(e)}`,
+                          sessionId,
+                        }),
+                    });
+                    sessionFilePath =
+                      provider.sessionStorage.hostSessionFilePath(
+                        hostRepoDir,
+                        sessionId,
+                      );
+
+                    // Parse token usage from the captured session JSONL
+                    if (provider.parseSessionUsage) {
+                      const content = yield* Effect.promise(() =>
+                        provider
+                          .sessionStorage!.readHostSession(
+                            hostRepoDir,
+                            sessionId,
+                          )
+                          .catch(() => undefined as string | undefined),
+                      );
+                      if (content) {
+                        const parsedUsage = provider.parseSessionUsage(content);
+                        if (parsedUsage) usage = parsedUsage;
+                      }
                     }
                   }
-                }
 
-                // Check completion signal
-                const matchedSignal = completionSignals.find((sig) =>
-                  agentOutput.includes(sig),
-                );
-                return {
-                  completionSignal: matchedSignal,
-                  stdout: agentOutput,
-                  sessionId,
-                  sessionFilePath,
-                  usage,
-                } as const;
-              }),
-          ),
+                  // Check completion signal
+                  const matchedSignal = completionSignals.find((sig) =>
+                    agentOutput.includes(sig),
+                  );
+                  return {
+                    completionSignal: matchedSignal,
+                    stdout: agentOutput,
+                    sessionId,
+                    sessionFilePath,
+                    usage,
+                  } as const;
+                }),
+            );
+            if (journal && attempt)
+              yield* Effect.promise(() =>
+                journal.beforeCleanup(attempt, value),
+              );
+            return value;
+          }),
       );
 
       const lifecycleResult = sandboxResult.value;
-      iterationPreservedPath = sandboxResult.preservedWorktreePath;
+      if (
+        sandboxResult.preservedWorktreePath &&
+        !preservedWorktreePaths.includes(sandboxResult.preservedWorktreePath)
+      )
+        preservedWorktreePaths.push(sandboxResult.preservedWorktreePath);
 
       allCommits.push(...lifecycleResult.commits);
       allStdout += lifecycleResult.result.stdout;
       resolvedBranch = lifecycleResult.branch;
 
       allIterations.push({
+        artifactRoot,
         sessionId: lifecycleResult.result.sessionId,
         sessionFilePath: lifecycleResult.result.sessionFilePath,
         usage: lifecycleResult.result.usage,
       });
+
+      if (journal && attempt)
+        yield* Effect.promise(() =>
+          journal.completed(attempt, preservedWorktreePaths),
+        );
 
       if (lifecycleResult.result.completionSignal !== undefined) {
         yield* display.status(
@@ -603,12 +652,15 @@ export const orchestrate = (
           "success",
         );
         return {
+          artifactRoot: options.artifactStore?.root,
+          runRecordPath: journal?.path,
           iterations: allIterations,
           completionSignal: lifecycleResult.result.completionSignal,
           stdout: allStdout,
           commits: allCommits,
           branch: resolvedBranch,
-          preservedWorktreePath: iterationPreservedPath,
+          preservedWorktreePath: preservedWorktreePaths.at(-1),
+          preservedWorktreePaths,
         };
       }
     }
@@ -618,12 +670,30 @@ export const orchestrate = (
       "info",
     );
     return {
+      artifactRoot: options.artifactStore?.root,
+      runRecordPath: journal?.path,
       iterations: allIterations,
       completionSignal: undefined,
       stdout: allStdout,
       commits: allCommits,
       branch: resolvedBranch,
-      preservedWorktreePath: iterationPreservedPath,
+      preservedWorktreePath: preservedWorktreePaths.at(-1),
+      preservedWorktreePaths,
     };
-  });
+  }).pipe(
+    Effect.onExit((exit) =>
+      journal
+        ? Effect.promise(() =>
+            journal.finish(
+              Exit.isFailure(exit) ? Cause.pretty(exit.cause) : undefined,
+              recovery.preservedWorktreePaths,
+              Exit.isFailure(exit) &&
+                Array.from(Cause.defects(exit.cause)).some(
+                  (error) => error instanceof ExecutionTerminationError,
+                ),
+            ),
+          )
+        : Effect.void,
+    ),
+  );
 };

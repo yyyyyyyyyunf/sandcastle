@@ -1,3 +1,9 @@
+import { createArtifactStore, type ArtifactOptions } from "./Artifacts.js";
+import {
+  createRunRecovery,
+  recordPreservedWorktree,
+  withRunRecovery,
+} from "./RunRecovery.js";
 import { resolveAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { join } from "node:path";
@@ -111,6 +117,7 @@ export interface CreateSandboxOptions {
  * on every reference).
  */
 export interface ResumeSandboxRunResultOptions {
+  readonly artifacts?: ArtifactOptions;
   /** Key-value map for {{KEY}} placeholder substitution in prompts. */
   readonly promptArgs?: PromptArgs;
   /** Substring(s) the agent emits to stop the iteration loop early. */
@@ -162,6 +169,10 @@ export interface SandboxRunOptions extends ResumeSandboxRunResultOptions {
 }
 
 export interface SandboxRunResult {
+  readonly artifactRoot?: string;
+  readonly runRecordPath?: string;
+  readonly preservedWorktreePaths?: string[];
+  readonly preservedWorktreePath?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
   readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if none fired. */
@@ -340,6 +351,12 @@ const buildSandboxHandle = (
       // If signal is already aborted, reject immediately without any setup
       runOptions.signal?.throwIfAborted();
       resolveAgentTimeouts(runOptions);
+      const recovery = createRunRecovery();
+      if (runOptions.artifacts && ctx.providerTag === "isolated")
+        throw new Error("artifacts is not supported for isolated providers");
+      const artifactStore = runOptions.artifacts
+        ? await createArtifactStore(runOptions.artifacts, hostRepoDir)
+        : undefined;
 
       const {
         agent: provider,
@@ -447,6 +464,14 @@ const buildSandboxHandle = (
             },
             sandbox,
           ).pipe(
+            Effect.tapErrorCause(() =>
+              Effect.sync(() => {
+                if (artifactStore) {
+                  ctx.onPreserveWorktree?.();
+                  recordPreservedWorktree(recovery, worktreePath);
+                }
+              }),
+            ),
             Effect.map((value) => ({
               value,
               preservedWorktreePath: undefined,
@@ -478,6 +503,8 @@ const buildSandboxHandle = (
               branch: mergeToHead ? undefined : branch,
               provider,
               completionSignal: runOptions.completionSignal,
+              recovery,
+              artifactStore,
               idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
               executionTimeoutSeconds: runOptions.executionTimeoutSeconds,
               completionTimeoutSeconds: runOptions.completionTimeoutSeconds,
@@ -510,13 +537,20 @@ const buildSandboxHandle = (
         const termination = getExecutionTerminationError(error);
         if (termination) {
           ctx.onPreserveWorktree?.();
-          throw termination;
+          recordPreservedWorktree(recovery, worktreePath);
+          throw withRunRecovery(termination, recovery);
         }
-        runOptions.signal?.throwIfAborted();
-        throw error;
+        throw withRunRecovery(
+          runOptions.signal?.aborted ? runOptions.signal.reason : error,
+          recovery,
+        );
       }
 
       const baseResult: SandboxRunResult = {
+        artifactRoot: result.artifactRoot,
+        runRecordPath: result.runRecordPath,
+        preservedWorktreePaths: result.preservedWorktreePaths,
+        preservedWorktreePath: result.preservedWorktreePath,
         iterations: result.iterations,
         completionSignal: result.completionSignal,
         stdout: result.stdout,
@@ -1104,6 +1138,8 @@ export const createSandbox = async (
   // SIGINT/SIGTERM/exit listener instead of tripping MaxListenersExceededWarning.
   const unregisterShutdown = registerShutdown(forceCleanup);
 
+  let preserveWorktree = false;
+
   // Build close function
   const doClose = async (): Promise<CloseResult> => {
     if (closed) return { preservedWorktreePath: undefined };
@@ -1118,7 +1154,7 @@ export const createSandbox = async (
         const termination = yield* Effect.exit(
           sandbox.assertExecStopped?.() ?? Effect.void,
         );
-        if (termination._tag === "Failure")
+        if (preserveWorktree || termination._tag === "Failure")
           return { preservedWorktreePath: worktreePath };
 
         // Preserve the worktree when it has uncommitted changes; otherwise remove it.
@@ -1148,6 +1184,9 @@ export const createSandbox = async (
   // Return the Sandbox handle
   return buildSandboxHandle(
     {
+      onPreserveWorktree: () => {
+        preserveWorktree = true;
+      },
       branch,
       worktreePath,
       hostRepoDir,

@@ -141,6 +141,7 @@ export const runHostHooks = (
   });
 
 export interface SandboxLifecycleOptions {
+  readonly preserveArtifacts?: (worktree: string) => Promise<void>;
   readonly finalizeSandbox?: () => Effect.Effect<void>;
   readonly hostRepoDir: string;
   readonly sandboxRepoDir: string;
@@ -405,6 +406,11 @@ export const withSandboxLifecycle = <A>(
 
     // Iteration-owned sandboxes must finish before modifying the target ref.
     yield* options.finalizeSandbox?.() ?? Effect.void;
+
+    if (options.preserveArtifacts)
+      yield* Effect.promise(() =>
+        options.preserveArtifacts!(hostSideWorktreePath),
+      );
 
     // Collect commits and handle cherry-pick for temp branches
     let commits: { sha: string }[];

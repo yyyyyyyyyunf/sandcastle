@@ -1,3 +1,9 @@
+import { createArtifactStore, type ArtifactOptions } from "./Artifacts.js";
+import {
+  createRunRecovery,
+  recordPreservedWorktree,
+  withRunRecovery,
+} from "./RunRecovery.js";
 import { resolveAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
@@ -121,6 +127,7 @@ export interface WorktreeInteractiveOptions {
 }
 
 export interface WorktreeRunOptions {
+  readonly artifacts?: ArtifactOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")) */
   readonly agent: AgentProvider;
   /** Sandbox provider (e.g. docker()). Required — AFK agents should always be sandboxed. */
@@ -165,6 +172,10 @@ export interface WorktreeRunOptions {
 }
 
 export interface WorktreeRunResult {
+  readonly artifactRoot?: string;
+  readonly runRecordPath?: string;
+  readonly preservedWorktreePaths?: string[];
+  readonly preservedWorktreePath?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
   readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if none fired. */
@@ -509,6 +520,12 @@ export const createWorktree = async (
     // If signal is already aborted, reject immediately without any setup
     opts.signal?.throwIfAborted();
     resolveAgentTimeouts(opts);
+    const recovery = createRunRecovery();
+    if (opts.artifacts && opts.sandbox.tag === "isolated")
+      throw new Error("artifacts is not supported for isolated providers");
+    const artifactStore = opts.artifacts
+      ? await createArtifactStore(opts.artifacts, hostRepoDir)
+      : undefined;
 
     const { prompt, promptFile, hooks, agent: provider } = opts;
     const sandboxProvider = opts.sandbox;
@@ -665,6 +682,14 @@ export const createWorktree = async (
               ),
             ({ handle }) => Effect.promise(() => closeSandboxHandle(handle)),
           ).pipe(
+            Effect.tapErrorCause(() =>
+              Effect.sync(() => {
+                if (artifactStore) {
+                  preserveWorktree = true;
+                  recordPreservedWorktree(recovery, worktreeInfo.path);
+                }
+              }),
+            ),
             Effect.map((value) => ({
               value,
               preservedWorktreePath: undefined,
@@ -698,6 +723,8 @@ export const createWorktree = async (
           branch: isMergeToHead ? undefined : worktreeInfo.branch,
           provider,
           completionSignal: opts.completionSignal,
+          recovery,
+          artifactStore,
           idleTimeoutSeconds: opts.idleTimeoutSeconds,
           executionTimeoutSeconds: opts.executionTimeoutSeconds,
           completionTimeoutSeconds: opts.completionTimeoutSeconds,
@@ -725,6 +752,10 @@ export const createWorktree = async (
       }).pipe(Effect.provide(runLayer));
 
       return {
+        artifactRoot: result.artifactRoot,
+        runRecordPath: result.runRecordPath,
+        preservedWorktreePaths: result.preservedWorktreePaths,
+        preservedWorktreePath: result.preservedWorktreePath,
         iterations: result.iterations,
         completionSignal: result.completionSignal,
         stdout: result.stdout,
@@ -748,10 +779,13 @@ export const createWorktree = async (
       const termination = getExecutionTerminationError(error);
       if (termination) {
         preserveWorktree = true;
-        throw termination;
+        recordPreservedWorktree(recovery, worktreeInfo.path);
+        throw withRunRecovery(termination, recovery);
       }
-      opts.signal?.throwIfAborted();
-      throw error;
+      throw withRunRecovery(
+        opts.signal?.aborted ? opts.signal.reason : error,
+        recovery,
+      );
     }
   };
 

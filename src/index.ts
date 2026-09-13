@@ -1,3 +1,8 @@
+export type { RunRecord, RecordedIteration } from "./RunJournal.js";
+export { ArtifactError } from "./Artifacts.js";
+export type { ArtifactOptions } from "./Artifacts.js";
+export { RunRecoveryError } from "./RunRecovery.js";
+export type { RunRecovery } from "./RunRecovery.js";
 export { run } from "./run.js";
 export { ExecutionTerminationError } from "./processTermination.js";
 export type { ExecOptions } from "./SandboxProvider.js";

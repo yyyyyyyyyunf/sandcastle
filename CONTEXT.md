@@ -219,3 +219,11 @@ _Avoid_: "log event" (the log file contains more than just agent output), "displ
 ## Execution deadline
 
 A fixed limit on the duration of one agent invocation, configured by `executionTimeoutSeconds`. It starts after sandbox setup and is never renewed by output or completion signals. Expiry requests confirmed termination and fails with `AgentExecutionTimeoutError`. Disabling idle detection (`idleTimeoutSeconds: false`) requires this finite limit; a live but silent process does not extend it.
+
+## Artifact snapshot
+
+A host copy of declared repository-relative evidence, stored in a unique directory for one iteration. It survives worktree cleanup and is not itself an acceptance verdict. Produced by the optional `artifacts` configuration for noSandbox and bind-mount providers.
+
+## Run record
+
+The host `run.json` that links iteration identities, candidate/merged commits, artifact snapshots, cleanup outcomes and recovery paths. Written before source cleanup and finalized before the next iteration. `caller-owned` means cleanup belongs to an independently managed worktree/sandbox handle.

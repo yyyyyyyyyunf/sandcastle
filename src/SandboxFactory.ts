@@ -27,6 +27,7 @@ import type {
   ExecOptions,
 } from "./SandboxProvider.js";
 import { ExecutionTerminationError } from "./processTermination.js";
+import { ArtifactError } from "./Artifacts.js";
 import { closeSandboxHandle } from "./sandboxShutdown.js";
 import { runHostHooks, type SandboxHooks } from "./SandboxLifecycle.js";
 import { startSandbox } from "./startSandbox.js";
@@ -238,6 +239,8 @@ export class SandboxFactory extends Context.Tag("SandboxFactory")<
 export class SandboxConfig extends Context.Tag("SandboxConfig")<
   SandboxConfig,
   {
+    readonly preserveWorktreeOnFailure?: boolean;
+    readonly onPreserveWorktree?: (path: string) => void;
     readonly env: Record<string, string>;
     readonly hostRepoDir: string;
     /** Paths relative to the host repo root to copy into the worktree before sandbox start. */
@@ -276,21 +279,25 @@ const printWorktreePreservedMessage = (
 const cleanupWorktree = (
   worktreePath: string,
   exit: Exit.Exit<unknown, unknown>,
+  preserveOnFailure = false,
+  onFailure?: (path: string) => void,
 ): Effect.Effect<string | undefined, WorktreeError> => {
   if (
     Exit.isFailure(exit) &&
-    Array.from(Cause.defects(exit.cause)).some(
-      (error) => error instanceof ExecutionTerminationError,
-    )
+    (preserveOnFailure ||
+      Array.from(Cause.defects(exit.cause)).some(
+        (error) =>
+          error instanceof ExecutionTerminationError ||
+          error instanceof ArtifactError,
+      ))
   ) {
     printWorktreePreservedMessage(
       worktreePath,
-      `Termination is unconfirmed; worktree preserved at ${worktreePath}`,
+      `Execution or evidence requires recovery; worktree preserved at ${worktreePath}`,
     );
     return Effect.succeed(worktreePath);
   }
   return WorktreeManager.hasUncommittedChanges(worktreePath).pipe(
-    Effect.catchAll(() => Effect.succeed(false)),
     Effect.flatMap((isDirty) => {
       if (isDirty) {
         printWorktreePreservedMessage(
@@ -308,6 +315,7 @@ const cleanupWorktree = (
         Effect.map(() => undefined as string | undefined),
       );
     }),
+    Effect.tapError(() => Effect.sync(() => onFailure?.(worktreePath))),
   );
 };
 
@@ -394,6 +402,8 @@ export const WorktreeDockerSandboxFactory = {
         hooks,
         signal,
         timeouts,
+        onPreserveWorktree,
+        preserveWorktreeOnFailure,
       } = yield* SandboxConfig;
 
       const isHeadMode = branchStrategy.type === "head";
@@ -529,9 +539,15 @@ export const WorktreeDockerSandboxFactory = {
                   ),
                 ) as Effect.Effect<A, E | SandboxError, R>,
               (worktreeInfo, exit) =>
-                cleanupWorktree(worktreeInfo.path, exit).pipe(
+                cleanupWorktree(
+                  worktreeInfo.path,
+                  exit,
+                  preserveWorktreeOnFailure,
+                  onPreserveWorktree,
+                ).pipe(
                   Effect.tap((p) => {
                     preservedPath = p;
+                    if (p) onPreserveWorktree?.(p);
                   }),
                   Effect.asVoid,
                   Effect.orDie,
@@ -594,9 +610,15 @@ export const WorktreeDockerSandboxFactory = {
                   ),
                 ) as Effect.Effect<A, E | SandboxError, R>,
               (worktreeInfo, exit) =>
-                cleanupWorktree(worktreeInfo.path, exit).pipe(
+                cleanupWorktree(
+                  worktreeInfo.path,
+                  exit,
+                  preserveWorktreeOnFailure,
+                  onPreserveWorktree,
+                ).pipe(
                   Effect.tap((p) => {
                     preservedPath = p;
+                    if (p) onPreserveWorktree?.(p);
                   }),
                   Effect.asVoid,
                   Effect.orDie,
@@ -756,9 +778,15 @@ export const WorktreeDockerSandboxFactory = {
               ) as Effect.Effect<A, E | SandboxError, R>,
             // Release: remove or preserve the worktree based on dirty state.
             (worktreeInfo, exit) =>
-              cleanupWorktree(worktreeInfo.path, exit).pipe(
+              cleanupWorktree(
+                worktreeInfo.path,
+                exit,
+                preserveWorktreeOnFailure,
+                onPreserveWorktree,
+              ).pipe(
                 Effect.tap((p) => {
                   preservedWorktreePath = p;
+                  if (p) onPreserveWorktree?.(p);
                 }),
                 Effect.asVoid,
                 Effect.orDie,

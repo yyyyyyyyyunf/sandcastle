@@ -393,6 +393,7 @@ if (closeResult.preservedWorktreePath) {
 | `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String(s) the agent emits to stop the iteration loop early                                                                           |
 | `idleTimeoutSeconds`       | number \| false    | `600`                         | Idle timeout in seconds; raw stdout/stderr activity resets it. `false` requires `executionTimeoutSeconds`                            |
 | `executionTimeoutSeconds`  | number             | —                             | Fixed deadline per agent invocation in seconds; activity and completion signals never renew it                                       |
+| `artifacts`                | ArtifactOptions    | —                             | Host root and repository-relative evidence paths to persist before cleanup                                                           |
 | `completionTimeoutSeconds` | number             | `60`                          | Grace window after the completion signal is seen but the agent process hasn't exited                                                 |
 | `name`                     | string             | —                             | Display name for the run                                                                                                             |
 | `logging`                  | object             | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                                                                                     |
@@ -404,6 +405,9 @@ if (closeResult.preservedWorktreePath) {
 | Field                      | Type                                                                                     | Description                                                                                                                         |
 | -------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `iterations`               | `IterationResult[]`                                                                      | Per-iteration results (use `.length` for the count)                                                                                 |
+| `artifactRoot`             | string?                                                                                  | Host directory containing this run's snapshots and JSON record                                                                      |
+| `runRecordPath`            | string?                                                                                  | Host JSON record when artifact persistence is enabled                                                                               |
+| `preservedWorktreePaths`   | string[]?                                                                                | All retained worktree references, in iteration order                                                                                |
 | `completionSignal`         | string?                                                                                  | The matched completion signal string, or `undefined` if none fired                                                                  |
 | `stdout`                   | string                                                                                   | Combined agent output from all iterations                                                                                           |
 | `commits`                  | `{ sha }[]`                                                                              | Commits created during the run                                                                                                      |
@@ -518,6 +522,7 @@ With `branchStrategy: { type: "merge-to-head" }`, each `wt.run()` / `wt.interact
 | `completionSignal`         | string \| string[]     | —       | Substring(s) to stop the iteration loop early                                                                                        |
 | `idleTimeoutSeconds`       | number \| false        | `600`   | Idle timeout in seconds; raw stdout/stderr activity resets it. `false` requires `executionTimeoutSeconds`                            |
 | `executionTimeoutSeconds`  | number                 | —       | Fixed deadline per agent invocation in seconds; activity and completion signals never renew it                                       |
+| `artifacts`                | ArtifactOptions        | —       | Host root and repository-relative evidence paths to persist before cleanup                                                           |
 | `completionTimeoutSeconds` | number                 | 60      | Grace window after completion signal is seen but agent process hasn't exited                                                         |
 | `name`                     | string                 | —       | Optional run name                                                                                                                    |
 | `logging`                  | LoggingOption          | file    | Logging mode                                                                                                                         |
@@ -529,14 +534,17 @@ With `branchStrategy: { type: "merge-to-head" }`, each `wt.run()` / `wt.interact
 
 #### `WorktreeRunResult`
 
-| Property           | Type                | Description                                            |
-| ------------------ | ------------------- | ------------------------------------------------------ |
-| `iterations`       | `IterationResult[]` | Per-iteration results (use `.length` for the count)    |
-| `completionSignal` | string              | The matched completion signal, or undefined            |
-| `stdout`           | string              | Combined stdout output from all agent iterations       |
-| `commits`          | { sha: string }[]   | List of commits made by the agent during the run       |
-| `branch`           | string              | The branch name the agent worked on                    |
-| `logFilePath`      | string              | Path to the log file, if logging was drained to a file |
+| Property                 | Type                | Description                                                    |
+| ------------------------ | ------------------- | -------------------------------------------------------------- |
+| `iterations`             | `IterationResult[]` | Per-iteration results (use `.length` for the count)            |
+| `artifactRoot`           | string?             | Host directory containing this run's snapshots and JSON record |
+| `runRecordPath`          | string?             | Host JSON record when artifact persistence is enabled          |
+| `preservedWorktreePaths` | string[]?           | All retained worktree references, in iteration order           |
+| `completionSignal`       | string              | The matched completion signal, or undefined                    |
+| `stdout`                 | string              | Combined stdout output from all agent iterations               |
+| `commits`                | { sha: string }[]   | List of commits made by the agent during the run               |
+| `branch`                 | string              | The branch name the agent worked on                            |
+| `logFilePath`            | string              | Path to the log file, if logging was drained to a file         |
 
 #### `WorktreeCreateSandboxOptions`
 
@@ -664,6 +672,34 @@ await run({
 ```
 
 Tell the agent to output your chosen string(s) in the prompt, and the orchestrator will stop when it detects any of them. The matched signal is returned as `result.completionSignal`.
+
+#### Durable evidence and recovery
+
+Use `artifacts` when the agent produces gitignored evidence that must survive worktree cleanup. The same option is available on `run()`, `worktree.run()` and `sandbox.run()`:
+
+```ts
+const result = await run({
+  agent: claudeCode("claude-opus-4-8"),
+  sandbox: noSandbox(),
+  prompt: "Complete the task and write evidence under acceptance/runs",
+  branchStrategy: { type: "merge-to-head" },
+  artifacts: {
+    root: ".sandcastle/evidence", // resolved against cwd; may be absolute
+    paths: ["acceptance/runs"], // relative to each iteration's worktree
+  },
+});
+console.log(result.runRecordPath); // <root>/<run-id>/run.json
+console.log(result.iterations[0]?.artifactRoot); // <root>/<run-id>/<iteration-id>
+console.log(result.preservedWorktreePaths); // every retained source, in order
+```
+
+Evidence is copied after execution stops and before merge/cleanup. The example log `acceptance/runs/check.log` becomes `<artifactRoot>/acceptance/runs/check.log`. Each iteration has a separate snapshot. Sources must stay within the worktree and contain regular files/directories; symlinks and special files are rejected. Paths cannot include `.git`, `.sandcastle` or parent traversal, and the host root must be outside exported directories. Missing source paths produce no files; callers remain responsible for deciding which evidence is required.
+
+The host JSON record includes each iteration's identity, candidate/merged revisions, snapshot, error and cleanup state. Sandcastle persists recovery references before source cleanup, then records the cleanup outcome before starting another iteration. Copy or record failure stops progression and preserves the source when cleanup has not occurred. If a final record update fails after cleanup, the preceding record still contains the durable commit and artifact references. Failed agent execution retains its worktree in this mode even when Git is clean. Evidence from unconfirmed termination is not treated as a stable snapshot.
+
+`run()` owns temporary worktree cleanup. Independently created worktree/sandbox handles report `caller-owned` cleanup; their later manual `close()` remains separate and honors requested retention. Isolated providers currently reject artifact export before agent execution; noSandbox and bind mounts use the host filesystem.
+
+Success results and errors with partial progress expose `preservedWorktreePaths`, available `iterations`, and `runRecordPath`. `preservedWorktreePath` remains compatible and now names the most recently preserved path, including when a later iteration was clean. Ordinary error objects keep their identity; primitive/frozen errors that need recovery fields are wrapped in `RunRecoveryError` with the original as `cause`. Exported snapshots and runner records do not certify workflow acceptance. See [ADR 0020](docs/adr/0020-durable-run-evidence.md).
 
 #### Silent tools and execution deadlines
 
@@ -877,6 +913,7 @@ Removes the Podman image.
 | `completionSignal`         | string \| string[] | `<promise>COMPLETE</promise>` | String or array of strings the agent emits to stop the iteration loop early                                                                                                                                                  |
 | `idleTimeoutSeconds`       | number \| false    | `600`                         | Idle timeout in seconds; raw stdout/stderr activity resets it. `false` requires `executionTimeoutSeconds`                                                                                                                    |
 | `executionTimeoutSeconds`  | number             | —                             | Fixed deadline per agent invocation in seconds; activity and completion signals never renew it                                                                                                                               |
+| `artifacts`                | ArtifactOptions    | —                             | Host root and repository-relative evidence paths to persist before cleanup                                                                                                                                                   |
 | `completionTimeoutSeconds` | number             | `60`                          | Grace window in seconds after the completion signal is observed but the agent process has not exited (hanging process). See [Hanging processes after the completion signal](#hanging-processes-after-the-completion-signal). |
 | `resumeSession`            | string             | —                             | Resume a prior session by ID for agents that support resume. Incompatible with `maxIterations > 1`. Session file must exist on host.                                                                                         |
 | `signal`                   | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`.                                                              |
@@ -885,15 +922,18 @@ Removes the Podman image.
 
 ### `RunResult`
 
-| Field              | Type                | Description                                                        |
-| ------------------ | ------------------- | ------------------------------------------------------------------ |
-| `iterations`       | `IterationResult[]` | Per-iteration results (use `.length` for the count)                |
-| `completionSignal` | string?             | The matched completion signal string, or `undefined` if none fired |
-| `stdout`           | string              | Agent output                                                       |
-| `commits`          | `{ sha }[]`         | Commits created during the run                                     |
-| `branch`           | string              | Target branch name                                                 |
-| `logFilePath`      | string?             | Path to the log file (only when logging to a file)                 |
-| `output`           | T?                  | Typed structured output (only present when `output` option is set) |
+| Field                    | Type                | Description                                                        |
+| ------------------------ | ------------------- | ------------------------------------------------------------------ |
+| `iterations`             | `IterationResult[]` | Per-iteration results (use `.length` for the count)                |
+| `artifactRoot`           | string?             | Host directory containing this run's snapshots and JSON record     |
+| `runRecordPath`          | string?             | Host JSON record when artifact persistence is enabled              |
+| `preservedWorktreePaths` | string[]?           | All retained worktree references, in iteration order               |
+| `completionSignal`       | string?             | The matched completion signal string, or `undefined` if none fired |
+| `stdout`                 | string              | Agent output                                                       |
+| `commits`                | `{ sha }[]`         | Commits created during the run                                     |
+| `branch`                 | string              | Target branch name                                                 |
+| `logFilePath`            | string?             | Path to the log file (only when logging to a file)                 |
+| `output`                 | T?                  | Typed structured output (only present when `output` option is set) |
 
 ### `IterationResult`
 

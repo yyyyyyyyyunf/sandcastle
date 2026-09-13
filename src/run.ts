@@ -1,3 +1,9 @@
+import { createArtifactStore, type ArtifactOptions } from "./Artifacts.js";
+import {
+  createRunRecovery,
+  recordPreservedWorktree,
+  withRunRecovery,
+} from "./RunRecovery.js";
 import { resolveAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -332,6 +338,8 @@ export interface Timeouts {
 }
 
 export interface RunOptions<A extends AgentProvider = AgentProvider> {
+  /** Evidence directories copied to a unique host location before merge/cleanup. */
+  readonly artifacts?: ArtifactOptions;
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-8")) */
   readonly agent: A;
   /** Sandbox provider (e.g. docker({ imageName: "sandcastle:myrepo" })). */
@@ -446,6 +454,8 @@ export type ResumeRunResultOptions = Omit<
 >;
 
 export interface RunResult {
+  readonly runRecordPath?: string;
+  readonly artifactRoot?: string;
   /** Per-iteration results (use `iterations.length` for the count). */
   readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if no signal fired before the iteration limit. */
@@ -458,8 +468,10 @@ export interface RunResult {
   readonly branch: string;
   /** Path to the log file, if logging was drained to a file. */
   readonly logFilePath?: string;
-  /** Host path to the preserved worktree, set when the run succeeded but the worktree had uncommitted changes. */
+  /** Most recently preserved worktree, including when a later iteration was clean. */
   readonly preservedWorktreePath?: string;
+  /** All worktrees preserved by this run, in iteration order. */
+  readonly preservedWorktreePaths?: string[];
   /** Continue the last captured agent session for exactly one iteration.
    *  Present only when the provider supports resume (`sessionStorage` populated). */
   readonly resume?: (
@@ -502,6 +514,7 @@ export async function run(
   // If signal is already aborted, reject immediately without any setup
   options.signal?.throwIfAborted();
   resolveAgentTimeouts(options);
+  const recovery = createRunRecovery();
 
   const {
     prompt,
@@ -589,6 +602,12 @@ export async function run(
   const hostRepoDir = await Effect.runPromise(
     resolveCwd(options.cwd).pipe(Effect.provide(NodeContext.layer)),
   );
+
+  if (options.artifacts && options.sandbox.tag === "isolated")
+    throw new Error("artifacts is not supported for isolated providers");
+  const artifactStore = options.artifacts
+    ? await createArtifactStore(options.artifacts, hostRepoDir)
+    : undefined;
 
   // Validate: resumeSession file must exist on the host
   if (options.resumeSession) {
@@ -680,6 +699,8 @@ export async function run(
     WorktreeDockerSandboxFactory.layer,
     Layer.mergeAll(
       Layer.succeed(SandboxConfig, {
+        preserveWorktreeOnFailure: artifactStore !== undefined,
+        onPreserveWorktree: (path) => recordPreservedWorktree(recovery, path),
         env,
         hostRepoDir,
         copyToWorktree: options.copyToWorktree,
@@ -753,6 +774,8 @@ export async function run(
       branch: orchestrateBranch,
       provider,
       completionSignal: options.completionSignal,
+      recovery,
+      artifactStore,
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       executionTimeoutSeconds: options.executionTimeoutSeconds,
       completionTimeoutSeconds: options.completionTimeoutSeconds,
@@ -803,10 +826,12 @@ export async function run(
   } catch (error: unknown) {
     // A cancellation reason must not hide failure to stop the execution.
     const termination = getExecutionTerminationError(error);
-    if (termination) throw termination;
+    if (termination) throw withRunRecovery(termination, recovery);
     // If the signal was aborted, surface its reason verbatim (no wrapping)
-    options.signal?.throwIfAborted();
-    throw error;
+    throw withRunRecovery(
+      options.signal?.aborted ? options.signal.reason : error,
+      recovery,
+    );
   }
 
   const baseResult = {
