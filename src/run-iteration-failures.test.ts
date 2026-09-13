@@ -11,18 +11,16 @@ const itPosix = process.platform === "win32" ? it.skip : it;
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
 itPosix.each([
-  "first-missing",
-  "first-held",
-  "missing",
-  "invalid-json",
-  "invalid-schema",
-  "held",
-  "iteration-limit",
+  { mode: "missing", failedIteration: 1 },
+  { mode: "held", failedIteration: 1 },
+  { mode: "missing", failedIteration: 2 },
+  { mode: "invalid-json", failedIteration: 2 },
+  { mode: "invalid-schema", failedIteration: 2 },
+  { mode: "held", failedIteration: 2 },
+  { mode: "iteration-limit", failedIteration: 2 },
 ])(
-  "%s preserves completed results and cannot invoke an agent after stopping",
-  async (scenario) => {
-    const failedIteration = scenario.startsWith("first-") ? 1 : 2;
-    const mode = scenario.replace("first-", "");
+  "$mode on iteration $failedIteration preserves completed results and prevents another invocation",
+  async ({ mode, failedIteration }) => {
     const dir = await mkdtemp(join(tmpdir(), "iteration-failure-"));
     try {
       const git = (...args: string[]) =>
