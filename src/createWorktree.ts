@@ -79,7 +79,7 @@ import { noSandbox } from "./sandboxes/no-sandbox.js";
 import { raceAbortSignal } from "./raceAbortSignal.js";
 import {
   getExecutionTerminationError,
-  getVerificationError,
+  getWorkflowError,
 } from "./executionError.js";
 import { closeSandboxHandle } from "./sandboxShutdown.js";
 import type { Timeouts } from "./run.js";
@@ -791,6 +791,7 @@ export const createWorktree = async (
 
       return {
         stopReason: result.stopReason,
+        preparation: result.preparation,
         artifactRoot: result.artifactRoot,
         runRecordPath: result.runRecordPath,
         preservedWorktreePaths: result.preservedWorktreePaths,
@@ -824,7 +825,7 @@ export const createWorktree = async (
       throw withRunRecovery(
         opts.signal?.aborted
           ? opts.signal.reason
-          : (getVerificationError(error) ?? error),
+          : (getWorkflowError(error) ?? error),
         recovery,
       );
     }

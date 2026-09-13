@@ -23,7 +23,7 @@ import { styleText } from "node:util";
 import { Effect, Layer } from "effect";
 import {
   getExecutionTerminationError,
-  getVerificationError,
+  getWorkflowError,
 } from "./executionError.js";
 import { resolveCwd } from "./resolveCwd.js";
 import { assertResumeSessionExists } from "./resumePrecheck.js";
@@ -882,7 +882,7 @@ export async function run(
     throw withRunRecovery(
       options.signal?.aborted
         ? options.signal.reason
-        : (getVerificationError(error) ?? error),
+        : (getWorkflowError(error) ?? error),
       recovery,
     );
   }

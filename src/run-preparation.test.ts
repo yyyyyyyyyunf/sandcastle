@@ -1,3 +1,4 @@
+import { createWorktree } from "./createWorktree.js";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,9 +10,13 @@ import { noSandbox } from "./sandboxes/no-sandbox.js";
 
 const itPosix = process.platform === "win32" ? it.skip : it;
 
-itPosix.each(["no-work", "blocked"])(
-  "host preparation returns %s without allocating an agent iteration",
-  async (decision) => {
+itPosix.each(
+  (["run", "worktree", "nested-sandbox"] as const).flatMap((entry) =>
+    ["no-work", "blocked"].map((decision) => ({ entry, decision })),
+  ),
+)(
+  "$entry host preparation returns $decision without allocating an agent iteration",
+  async ({ entry, decision }) => {
     const dir = await mkdtemp(join(tmpdir(), "run-preparation-"));
     try {
       const git = (...args: string[]) =>
@@ -22,10 +27,10 @@ itPosix.each(["no-work", "blocked"])(
       git("commit", "-m", "fixture");
       const head = git("rev-parse", "HEAD");
       let allocations = 0;
-      const result = await run({
+      const opts = {
         cwd: dir,
         prompt: "unused",
-        branchStrategy: { type: "merge-to-head" },
+        branchStrategy: { type: "merge-to-head" as const },
         artifacts: { root: ".sandcastle/evidence", paths: ["proof"] },
         preparation: {
           command: [
@@ -55,7 +60,27 @@ itPosix.each(["no-work", "blocked"])(
           },
           parseStreamLine: () => [],
         },
-      });
+      };
+      const wt =
+        entry !== "run"
+          ? await createWorktree({
+              cwd: dir,
+              branchStrategy: opts.branchStrategy,
+            })
+          : undefined;
+      const nested =
+        entry === "nested-sandbox"
+          ? await wt!.createSandbox({ sandbox: noSandbox() })
+          : undefined;
+      const worktreesBefore = git("worktree", "list", "--porcelain");
+      const result = await (nested
+        ? nested.run(opts)
+        : wt
+          ? wt.run(opts)
+          : run(opts));
+      expect(git("worktree", "list", "--porcelain")).toBe(worktreesBefore);
+      await nested?.close();
+      await wt?.close();
       expect(allocations).toBe(0);
       expect(result.stopReason).toBe(decision);
       expect(result.iterations).toEqual([]);

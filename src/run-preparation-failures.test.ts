@@ -16,6 +16,8 @@ itPosix.each([
   "timeout",
   "abort",
   "changed",
+  "changed-no-work",
+  "changed-blocked",
   "hook-target",
   "hook-source",
   "prompt-target",
@@ -53,7 +55,7 @@ itPosix.each([
         if(mode==='timeout'||mode==='abort') cp.spawn(process.execPath,['-e',${JSON.stringify(writer)}],{stdio:'inherit'});
         else if(mode==='invalid') console.log(JSON.stringify({version:2,decision:'run'}));
         else if(mode==='exit') process.exit(8);
-        else { if(mode==='overflow') console.log(' '.repeat(1100000)); if(mode==='changed') cp.execFileSync('git',['commit','--allow-empty','-m','concurrent target change']); console.log(JSON.stringify({version:1,decision:'run'})); }`;
+        else { if(mode==='overflow') console.log(' '.repeat(1100000)); if(mode.startsWith('changed')) cp.execFileSync('git',['commit','--allow-empty','-m','concurrent target change']); console.log(JSON.stringify({version:1,decision:mode==='changed-no-work'?'no-work':mode==='changed-blocked'?'blocked':'run'})); }`;
       invocation = run({
         cwd: dir,
         ...(mode.startsWith("prompt-") ? { promptFile } : { prompt: "unused" }),
@@ -129,7 +131,9 @@ itPosix.each([
             ? "protocol"
             : mode === "exit"
               ? "command"
-              : mode.startsWith("hook-") || mode.startsWith("prompt-")
+              : mode.startsWith("hook-") ||
+                  mode.startsWith("prompt-") ||
+                  mode.startsWith("changed")
                 ? "changed"
                 : mode,
         );

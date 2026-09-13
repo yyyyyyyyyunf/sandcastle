@@ -80,7 +80,7 @@ import { assertResumeSessionExists } from "./resumePrecheck.js";
 import { registerShutdown } from "./shutdownRegistry.js";
 import {
   getExecutionTerminationError,
-  getVerificationError,
+  getWorkflowError,
 } from "./executionError.js";
 import { closeSandboxHandle } from "./sandboxShutdown.js";
 
@@ -580,13 +580,14 @@ const buildSandboxHandle = (
         throw withRunRecovery(
           runOptions.signal?.aborted
             ? runOptions.signal.reason
-            : (getVerificationError(error) ?? error),
+            : (getWorkflowError(error) ?? error),
           recovery,
         );
       }
 
       const baseResult: SandboxRunResult = {
         stopReason: result.stopReason,
+        preparation: result.preparation,
         artifactRoot: result.artifactRoot,
         runRecordPath: result.runRecordPath,
         preservedWorktreePaths: result.preservedWorktreePaths,

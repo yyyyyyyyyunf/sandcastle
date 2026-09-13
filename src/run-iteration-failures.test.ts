@@ -11,14 +11,18 @@ const itPosix = process.platform === "win32" ? it.skip : it;
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
 itPosix.each([
+  "first-missing",
+  "first-held",
   "missing",
   "invalid-json",
   "invalid-schema",
   "held",
   "iteration-limit",
 ])(
-  "%s on the second task preserves the first result and cannot invoke a third agent",
-  async (mode) => {
+  "%s preserves completed results and cannot invoke an agent after stopping",
+  async (scenario) => {
+    const failedIteration = scenario.startsWith("first-") ? 1 : 2;
+    const mode = scenario.replace("first-", "");
     const dir = await mkdtemp(join(tmpdir(), "iteration-failure-"));
     try {
       const git = (...args: string[]) =>
@@ -29,6 +33,7 @@ itPosix.each([
       await writeFile(join(dir, ".gitignore"), ".sandcastle/\nproof/\n");
       git("add", ".");
       git("commit", "-m", "fixture");
+      const initial = git("rev-parse", "HEAD");
       let calls = 0;
       const result: any = await run({
         cwd: dir,
@@ -74,7 +79,7 @@ itPosix.each([
           buildPrintCommand: () => {
             calls++;
             const output =
-              calls === 1 || mode === "iteration-limit"
+              calls < failedIteration || mode === "iteration-limit"
                 ? '<result>{"status":"completed"}</result>'
                 : mode === "held"
                   ? '<result>{"status":"held"}</result>'
@@ -89,12 +94,14 @@ itPosix.each([
           },
         },
       }).catch((error) => error);
-      expect(calls).toBe(2);
+      expect(calls).toBe(failedIteration);
       const record = JSON.parse(await readFile(result.runRecordPath, "utf8"));
-      expect(record.iterations).toHaveLength(2);
-      expect(record.preparations).toHaveLength(2);
-      expect(result.iterations[0].output).toEqual({ status: "completed" });
-      const previousCommit = result.iterations[0].candidateCommit;
+      expect(record.iterations).toHaveLength(failedIteration);
+      expect(record.preparations).toHaveLength(failedIteration);
+      if (failedIteration > 1)
+        expect(result.iterations[0].output).toEqual({ status: "completed" });
+      const previousCommit =
+        failedIteration > 1 ? result.iterations[0].candidateCommit : initial;
       if (mode === "iteration-limit") {
         expect(result.stopReason).toBe("iteration-limit");
         expect(result.iterations).toHaveLength(2);
@@ -106,25 +113,36 @@ itPosix.each([
         expect(result.preservedWorktreePaths).toHaveLength(1);
         expect(
           await readFile(
-            join(result.preservedWorktreePaths[0], "delivery-2"),
+            join(
+              result.preservedWorktreePaths[0],
+              `delivery-${failedIteration}`,
+            ),
             "utf8",
           ),
         ).toBe("candidate");
         expect(
           await readFile(
-            join(record.iterations[1].artifactRoot, "proof/log"),
+            join(
+              record.iterations[failedIteration - 1].artifactRoot,
+              "proof/log",
+            ),
             "utf8",
           ),
-        ).toBe("attempt 2");
+        ).toBe(`attempt ${failedIteration}`);
         const raw = JSON.parse(
-          await readFile(record.iterations[1].rawResultPath, "utf8"),
+          await readFile(
+            record.iterations[failedIteration - 1].rawResultPath,
+            "utf8",
+          ),
         );
         expect(raw.stdout).toContain("<promise>COMPLETE</promise>");
         if (mode === "held") expect(result.stopReason).toBe("retained");
         else {
           expect(result).toBeInstanceOf(StructuredOutputError);
-          expect(result.iterations).toHaveLength(1);
-          expect(record.iterations[1].resultPath).toBeUndefined();
+          expect(result.iterations).toHaveLength(failedIteration - 1);
+          expect(
+            record.iterations[failedIteration - 1].resultPath,
+          ).toBeUndefined();
           expect(record.status).toBe("failed");
         }
       }
@@ -133,4 +151,48 @@ itPosix.each([
     }
   },
   15000,
+);
+
+itPosix(
+  "legacy output failure retains the completed run recovery references and post-run merge semantics",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "legacy-output-recovery-"));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync("git", args, { cwd: dir, stdio: "pipe" })
+          .toString()
+          .trim();
+      git("init", "-b", "main");
+      await writeFile(join(dir, ".gitignore"), ".sandcastle/\n");
+      git("add", ".");
+      git("commit", "-m", "fixture");
+      const result: any = await run({
+        cwd: dir,
+        prompt: "<result>",
+        maxIterations: 1,
+        output: Output.string({ tag: "result" }),
+        sandbox: noSandbox(),
+        branchStrategy: { type: "merge-to-head" },
+        artifacts: { root: ".sandcastle/evidence", paths: ["proof"] },
+        agent: {
+          name: "legacy-fixture",
+          env: {},
+          captureSessions: false,
+          parseStreamLine: () => [],
+          buildPrintCommand: () => ({
+            command: `${quote(process.execPath)} -e ${quote("require('node:child_process').execFileSync('git',['commit','--allow-empty','-m','legacy delivery']);console.log('no result');")}`,
+          }),
+        },
+      }).catch((error) => error);
+      expect(result).toBeInstanceOf(StructuredOutputError);
+      expect(result.iterations).toHaveLength(1);
+      expect(result.commits).toHaveLength(1);
+      expect(git("rev-parse", "HEAD")).toBe(result.commits[0].sha);
+      const record = JSON.parse(await readFile(result.runRecordPath, "utf8"));
+      expect(record.iterations[0].cleanup).toBe("removed");
+      expect(record.iterations[0].mergedCommit).toBe(result.commits[0].sha);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
 );

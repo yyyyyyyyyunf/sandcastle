@@ -103,7 +103,7 @@ A silence-based grace window that takes over from the **idle timeout** once a **
 _Avoid_: "grace period" (too generic), "post-completion timeout", "completion grace window", "drain timeout"
 
 **Structured output**:
-A schema-validated JSON payload emitted by the **agent** inside a caller-specified XML tag and returned to the caller of `run()`. Configured via legacy `output: Output.object({ tag, schema })` after a single run, or `iterationOutput` before each verified merge. Native iteration output is returned on `iterations[]`. Orthogonal to the **completion signal** -- a run can use either, both, or neither. The caller owns the prompt-side instruction telling the agent to emit the tag; Sandcastle does not inject it, and `run()` errors early if the resolved prompt does not contain the configured tag.
+A schema-validated JSON payload emitted by the **agent** inside a caller-specified XML tag and returned to the caller of `run()`. Configured via legacy `output: Output.object({ tag, schema })` after a single run, or `iterationOutput` before each verified merge. Native iteration output is returned on `iterations[]`. Orthogonal to the **completion signal** -- a run can use either, both, or neither. The caller owns the prompt-side instruction telling the agent to emit the tag. Legacy `output` errors early if the resolved prompt does not contain the configured tag. Native `iterationOutput` exposes `outputTag` in the handoff and validates the returned payload before verification; it does not require a literal tag in the prompt.
 _Avoid_: "output payload", "result", "JSON output"
 
 **Output schema**:

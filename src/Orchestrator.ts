@@ -1,4 +1,9 @@
-import { PreparationError, assertPreparedTarget } from "./Preparation.js";
+import {
+  createIterationHandoff,
+  appendIterationHandoff,
+  type IterationHandoff,
+} from "./IterationHandoff.js";
+import { assertPreparedTarget } from "./Preparation.js";
 import { extractStructuredOutput } from "./extractStructuredOutput.js";
 import type { OutputDefinition } from "./Output.js";
 import {
@@ -513,6 +518,7 @@ export const orchestrate = (
         );
         const decision = preparation;
         yield* Effect.promise(() => journal!.prepared(context, decision));
+        yield* Effect.promise(() => assertPreparedTarget(context));
         if (decision.decision !== "run")
           return {
             stopReason: decision.decision,
@@ -526,7 +532,6 @@ export const orchestrate = (
             preservedWorktreePaths,
             preservedWorktreePath: preservedWorktreePaths.at(-1),
           };
-        yield* Effect.promise(() => assertPreparedTarget(context));
       }
       const attempt = journal
         ? yield* Effect.promise(() =>
@@ -688,45 +693,29 @@ export const orchestrate = (
                   // Preprocess prompt (run !`command` expressions inside sandbox).
                   // Inline prompts pass through literally — skip expansion.
                   let iterationPrompt = prompt;
-                  let handoff:
-                    | (PreparationContext & {
-                        sourceBranch: string;
-                        worktreePath: string;
-                      })
-                    | undefined;
+                  let handoff: IterationHandoff | undefined;
                   if (options.preparation || options.iterationOutput) {
-                    const identity = yield* Effect.promise(async () => {
-                      const worktreePath =
-                        hostWorktreePath ?? ctx.sandboxRepoDir;
-                      const sourceBranch = await gitOutput(
-                        worktreePath,
-                        "symbolic-ref",
-                        "--short",
-                        "HEAD",
-                      );
-                      const targetBranch =
-                        preparedContext?.targetBranch ?? ctx.targetBranch!;
-                      const targetCommit =
-                        preparedContext?.targetCommit ?? ctx.targetCommit!;
-                      if (ctx.baseHead !== targetCommit)
-                        throw new PreparationError(
-                          "changed",
-                          "Prepared target or source baseline changed before agent invocation",
-                        );
-                      return {
-                        version: 1 as const,
-                        hostRepoDir,
-                        iterationId: attempt!.iterationId,
-                        metadata: preparation?.metadata,
-                        sourceBranch,
-                        targetBranch,
-                        targetCommit,
-                        worktreePath,
-                        sandboxRepoDir: ctx.sandboxRepoDir,
-                        artifactRoot,
-                        outputTag: options.iterationOutput?.tag,
-                      };
-                    });
+                    const identity = yield* Effect.promise(() =>
+                      createIterationHandoff(
+                        {
+                          version: 1,
+                          hostRepoDir,
+                          iterationId: attempt!.iterationId,
+                          targetBranch:
+                            preparedContext?.targetBranch ?? ctx.targetBranch!,
+                          targetCommit:
+                            preparedContext?.targetCommit ?? ctx.targetCommit!,
+                        },
+                        {
+                          metadata: preparation?.metadata,
+                          worktreePath: hostWorktreePath ?? ctx.sandboxRepoDir,
+                          sandboxRepoDir: ctx.sandboxRepoDir,
+                          baseHead: ctx.baseHead,
+                          artifactRoot: attempt!.artifactRoot,
+                          outputTag: options.iterationOutput?.tag,
+                        },
+                      ),
+                    );
                     handoff = identity;
                     if (options.promptTemplate)
                       iterationPrompt = yield* substitutePromptArgs(
@@ -748,30 +737,9 @@ export const orchestrate = (
                       );
                   if (handoff) {
                     const context = handoff;
-                    yield* Effect.promise(async () => {
-                      await assertPreparedTarget(context);
-                      if (
-                        (await gitOutput(
-                          context.worktreePath,
-                          "rev-parse",
-                          "HEAD",
-                        )) !== context.targetCommit ||
-                        (await gitOutput(
-                          context.worktreePath,
-                          "symbolic-ref",
-                          "--short",
-                          "HEAD",
-                        )) !== context.sourceBranch
-                      )
-                        throw new PreparationError(
-                          "changed",
-                          "Source baseline changed during prompt preparation",
-                        );
-                    });
-                    fullPrompt +=
-                      "\n\n<sandcastle-iteration-context>\n" +
-                      JSON.stringify(handoff).replaceAll("<", "\\u003c") +
-                      "\n</sandcastle-iteration-context>";
+                    fullPrompt = yield* Effect.promise(() =>
+                      appendIterationHandoff(fullPrompt, context),
+                    );
                   }
 
                   yield* display.status(label("Agent started"), "success");

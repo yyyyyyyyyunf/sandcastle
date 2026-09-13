@@ -1,3 +1,4 @@
+export type { IterationHandoff } from "./IterationHandoff.js";
 /** Native host preparation + verified per-iteration output protocol. */
 export const WORKFLOW_PROTOCOL_VERSION = 1 as const;
 export { PreparationError } from "./Preparation.js";
