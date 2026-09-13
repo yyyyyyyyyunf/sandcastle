@@ -1,4 +1,4 @@
-import { validateAgentTimeouts } from "./agentTimeouts.js";
+import { resolveAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { join } from "node:path";
 import { Effect, Layer, Ref } from "effect";
@@ -339,7 +339,7 @@ const buildSandboxHandle = (
     run: async (runOptions: SandboxRunOptions): Promise<SandboxRunResult> => {
       // If signal is already aborted, reject immediately without any setup
       runOptions.signal?.throwIfAborted();
-      validateAgentTimeouts(runOptions);
+      resolveAgentTimeouts(runOptions);
 
       const {
         agent: provider,

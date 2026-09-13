@@ -1,3 +1,4 @@
+import { observeProcessActivity } from "../observeProcessActivity.js";
 /**
  * Docker sandbox provider — wraps DockerLifecycle into a SandboxProvider.
  *
@@ -273,13 +274,8 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
               reject(new Error(`docker exec failed: ${error.message}`));
             });
 
-            if (opts?.onActivity) {
-              const observe = (chunk: Buffer) => {
-                if (chunk.length > 0) opts.onActivity!();
-              };
-              proc.stdout!.on("data", observe);
-              proc.stderr!.on("data", observe);
-            }
+            observeProcessActivity(proc, opts?.onActivity);
+
             if (opts?.onLine) {
               const onLine = opts.onLine;
               const stdoutTail = new BoundedTail(maxOutputTailChars, "\n");

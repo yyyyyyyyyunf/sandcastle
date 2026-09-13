@@ -1,3 +1,4 @@
+import { observeProcessActivity } from "../observeProcessActivity.js";
 /**
  * Podman sandbox provider — creates Podman containers with bind-mounts.
  *
@@ -329,13 +330,8 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
               reject(new Error(`podman exec failed: ${error.message}`));
             });
 
-            if (opts?.onActivity) {
-              const observe = (chunk: Buffer) => {
-                if (chunk.length > 0) opts.onActivity!();
-              };
-              proc.stdout!.on("data", observe);
-              proc.stderr!.on("data", observe);
-            }
+            observeProcessActivity(proc, opts?.onActivity);
+
             if (opts?.onLine) {
               const onLine = opts.onLine;
               const stdoutTail = new BoundedTail(maxOutputTailChars, "\n");

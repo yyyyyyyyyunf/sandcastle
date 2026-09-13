@@ -1,4 +1,4 @@
-import { validateAgentTimeouts } from "./agentTimeouts.js";
+import { resolveAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { appendFileSync, mkdirSync } from "node:fs";
 import path, { join } from "node:path";
@@ -501,7 +501,7 @@ export async function run(
 ): Promise<RunResult & { output?: unknown }> {
   // If signal is already aborted, reject immediately without any setup
   options.signal?.throwIfAborted();
-  validateAgentTimeouts(options);
+  resolveAgentTimeouts(options);
 
   const {
     prompt,

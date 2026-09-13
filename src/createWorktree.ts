@@ -1,4 +1,4 @@
-import { validateAgentTimeouts } from "./agentTimeouts.js";
+import { resolveAgentTimeouts } from "./agentTimeouts.js";
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
 import { WorktreeError } from "./errors.js";
@@ -508,7 +508,7 @@ export const createWorktree = async (
   ): Promise<WorktreeRunResult> => {
     // If signal is already aborted, reject immediately without any setup
     opts.signal?.throwIfAborted();
-    validateAgentTimeouts(opts);
+    resolveAgentTimeouts(opts);
 
     const { prompt, promptFile, hooks, agent: provider } = opts;
     const sandboxProvider = opts.sandbox;

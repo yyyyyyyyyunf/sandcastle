@@ -1,3 +1,4 @@
+import { observeProcessActivity } from "../observeProcessActivity.js";
 /**
  * No-sandbox provider — runs the agent directly on the host with no container isolation.
  *
@@ -133,13 +134,7 @@ export const noSandbox = (options?: NoSandboxOptions): NoSandboxProvider => ({
             reject(new Error(`exec failed: ${error.message}`));
           });
 
-          if (opts?.onActivity) {
-            const observe = (chunk: Buffer) => {
-              if (chunk.length > 0) opts.onActivity!();
-            };
-            proc.stdout!.on("data", observe);
-            proc.stderr!.on("data", observe);
-          }
+          observeProcessActivity(proc, opts?.onActivity);
 
           if (opts?.onLine) {
             const onLine = opts.onLine;

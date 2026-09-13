@@ -1,3 +1,4 @@
+import { resolveAgentTimeouts, type AgentTimeouts } from "./agentTimeouts.js";
 import { Deferred, Duration, Effect, Fiber } from "effect";
 import { AgentStreamEmitter } from "./AgentStreamEmitter.js";
 import { Display } from "./Display.js";
@@ -25,8 +26,7 @@ const invokeAgent = (
   sandboxRepoDir: string,
   prompt: string,
   provider: AgentProvider,
-  idleTimeoutMs: number | undefined,
-  completionTimeoutMs: number,
+  timeouts: AgentTimeouts,
   completionSignals: readonly string[],
   onText: (text: string) => void,
   onToolCall: (name: string, formattedArgs: string) => void,
@@ -37,12 +37,16 @@ const invokeAgent = (
   resumeSession?: string,
   forkSession?: boolean,
   signal?: AbortSignal,
-  executionTimeoutMs?: number,
 ): Effect.Effect<
   { result: string; sessionId?: string; usage?: IterationUsage },
   SandboxError
 > =>
   Effect.gen(function* () {
+    const {
+      idleMs: idleTimeoutMs,
+      executionMs: executionTimeoutMs,
+      completionMs: completionTimeoutMs,
+    } = timeouts;
     let resultText = "";
     let sessionId: string | undefined;
     let usage: IterationUsage | undefined;
@@ -263,8 +267,6 @@ const invokeAgent = (
   });
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
-const DEFAULT_IDLE_TIMEOUT_SECONDS = 10 * 60; // 600 seconds
-const DEFAULT_COMPLETION_TIMEOUT_SECONDS = 60;
 
 export interface OrchestrateOptions {
   readonly hostRepoDir: string;
@@ -339,13 +341,7 @@ export const orchestrate = (
   SandboxError,
   SandboxFactory | Display | AgentStreamEmitter
 > => {
-  const idleTimeoutMs =
-    options.idleTimeoutSeconds === false
-      ? undefined
-      : (options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS) * 1000;
-  const completionTimeoutMs =
-    (options.completionTimeoutSeconds ?? DEFAULT_COMPLETION_TIMEOUT_SECONDS) *
-    1000;
+  const agentTimeouts = resolveAgentTimeouts(options);
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
@@ -510,8 +506,7 @@ export const orchestrate = (
                   ctx.sandboxRepoDir,
                   fullPrompt,
                   provider,
-                  idleTimeoutMs,
-                  completionTimeoutMs,
+                  agentTimeouts,
                   completionSignals,
                   onText,
                   onToolCall,
@@ -522,9 +517,6 @@ export const orchestrate = (
                   iterationResumeSession,
                   iterationForkSession,
                   options.signal,
-                  options.executionTimeoutSeconds === undefined
-                    ? undefined
-                    : options.executionTimeoutSeconds * 1000,
                 );
 
                 // Flush any remaining buffered text deltas

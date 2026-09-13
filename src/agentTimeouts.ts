@@ -1,9 +1,15 @@
-/** Validate caller limits before worktree or agent allocation. */
-export const validateAgentTimeouts = (options: {
+export interface AgentTimeouts {
+  readonly idleMs: number | undefined;
+  readonly executionMs: number | undefined;
+  readonly completionMs: number;
+}
+
+/** Validate and resolve caller limits before worktree or agent allocation. */
+export const resolveAgentTimeouts = (options: {
   idleTimeoutSeconds?: number | false;
   executionTimeoutSeconds?: number;
   completionTimeoutSeconds?: number;
-}): void => {
+}): AgentTimeouts => {
   if (
     options.idleTimeoutSeconds === false &&
     options.executionTimeoutSeconds === undefined
@@ -34,4 +40,15 @@ export const validateAgentTimeouts = (options: {
       );
     }
   }
+  return {
+    idleMs:
+      options.idleTimeoutSeconds === false
+        ? undefined
+        : (options.idleTimeoutSeconds ?? 600) * 1000,
+    executionMs:
+      options.executionTimeoutSeconds === undefined
+        ? undefined
+        : options.executionTimeoutSeconds * 1000,
+    completionMs: (options.completionTimeoutSeconds ?? 60) * 1000,
+  };
 };
