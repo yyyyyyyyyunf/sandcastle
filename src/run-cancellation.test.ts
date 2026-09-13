@@ -14,6 +14,7 @@ const itPosix = process.platform === "win32" ? it.skip : it;
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 
 interface CancellationCase {
+  deliver?: boolean;
   name: string;
   entry?: "run" | "worktree" | "sandbox" | "worktree-sandbox";
   stop: "idle" | "abort" | "completion" | "normal";
@@ -22,6 +23,11 @@ interface CancellationCase {
   shutdown?: "fails" | "hangs";
 }
 const cases: CancellationCase[] = [
+  {
+    name: "confirmed shutdown merges candidate",
+    stop: "normal",
+    deliver: true,
+  },
   { name: "idle stops descendants", stop: "idle" },
   { name: "abort stops descendants", stop: "abort" },
   { name: "completion grace stops descendants", stop: "completion" },
@@ -83,6 +89,7 @@ itPosix.each(cases)(
     unsupported = false,
     resistsTerm = false,
     shutdown,
+    deliver = false,
   }) => {
     let resource: { close(): Promise<unknown> } | undefined;
     const dir = await mkdtemp(join(tmpdir(), "run-cancel-"));
@@ -106,9 +113,9 @@ itPosix.each(cases)(
       fs.writeFileSync(root + '/pid', String(process.pid));
       fs.writeFileSync(root + '/heartbeat', 'start');
       setInterval(() => fs.appendFileSync(root + '/heartbeat', '.'), 10);
-      ${unsupported || shutdown !== undefined ? "fs.writeFileSync('delivery.txt', 'candidate'); require('node:child_process').execFileSync('git', ['add', 'delivery.txt']); require('node:child_process').execFileSync('git', ['commit', '-m', 'candidate']);" : ""}
+      ${unsupported || shutdown !== undefined || deliver ? "fs.writeFileSync('delivery.txt', 'candidate'); require('node:child_process').execFileSync('git', ['add', 'delivery.txt']); require('node:child_process').execFileSync('git', ['commit', '-m', 'candidate']);" : ""}
       console.log(${JSON.stringify(stop === "completion" || unsupported ? "<promise>COMPLETE</promise>" : "ready")});
-      setTimeout(() => process.exit(0), ${shutdown !== undefined ? 300 : 10000});
+      setTimeout(() => process.exit(0), ${shutdown !== undefined || deliver ? 300 : 10000});
     `,
       );
       await writeFile(
@@ -182,7 +189,7 @@ itPosix.each(cases)(
         prompt: "fixture",
         branchStrategy: {
           type:
-            unsupported || shutdown !== undefined
+            unsupported || shutdown !== undefined || deliver
               ? ("merge-to-head" as const)
               : ("head" as const),
         },
@@ -238,6 +245,14 @@ itPosix.each(cases)(
             .match(/^worktree /gm),
         ).toHaveLength(2);
         return;
+      } else if (deliver) {
+        expect((await execution).commits).toHaveLength(1);
+        expect(git("rev-parse", "HEAD").toString().trim()).not.toBe(
+          initialHead,
+        );
+        expect(await readFile(join(dir, "delivery.txt"), "utf8")).toBe(
+          "candidate",
+        );
       } else if (stop === "completion") {
         expect((await execution).completionSignal).toBe(
           "<promise>COMPLETE</promise>",

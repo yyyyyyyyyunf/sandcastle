@@ -434,8 +434,14 @@ export const withSandboxLifecycle = <A>(
       // Skipped when `keepSourceBranch` is set (createWorktree's merge-to-head
       // path) so the worktree stays on its source branch for re-use.
       if (!options.keepSourceBranch) {
-        yield* execOk(sandbox, "git checkout --detach", {
-          cwd: sandboxRepoDir,
+        yield* Effect.tryPromise({
+          try: () =>
+            execAsync("git checkout --detach", { cwd: hostSideWorktreePath }),
+          catch: (cause) =>
+            new ExecError({
+              command: "git checkout --detach",
+              message: String(cause),
+            }),
         });
       }
 

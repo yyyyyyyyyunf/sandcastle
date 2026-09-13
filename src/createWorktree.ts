@@ -632,7 +632,7 @@ export const createWorktree = async (
             })()
           : ClackDisplay.layer;
 
-      const reuseFactoryLayer = Layer.succeed(SandboxFactory, {
+      const iterationFactoryLayer = Layer.succeed(SandboxFactory, {
         withSandbox: (makeEffect) =>
           Effect.acquireUseRelease(
             startIterationSandbox(),
@@ -672,7 +672,7 @@ export const createWorktree = async (
       );
 
       const runLayer = Layer.mergeAll(
-        reuseFactoryLayer,
+        iterationFactoryLayer,
         runDisplayLayer,
         streamEmitterLayer,
       );

@@ -30,6 +30,9 @@ export const terminateProcessGroup = async (pid: number): Promise<void> => {
         return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+        // Darwin can report EPERM for a group containing only zombies before
+        // the parent reaps them. Keep waiting; only ESRCH confirms absence.
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
         throw error;
       }
     };
@@ -37,7 +40,8 @@ export const terminateProcessGroup = async (pid: number): Promise<void> => {
       try {
         process.kill(-pid, signal);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH" && code !== "EPERM") throw error;
       }
     };
     if (!exists()) return;

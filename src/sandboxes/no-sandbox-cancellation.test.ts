@@ -7,6 +7,40 @@ import { noSandbox } from "./no-sandbox.js";
 
 const itPosix = process.platform === "win32" ? it.skip : it;
 
+itPosix(
+  "concurrent cancellation waits for kernel process-group reaping",
+  async () => {
+    for (let batch = 0; batch < 8; batch++) {
+      const outcomes = await Promise.allSettled(
+        Array.from({ length: 8 }, async () => {
+          const handle = await noSandbox().create({
+            worktreePath: tmpdir(),
+            env: {},
+          });
+          const abort = new AbortController();
+          try {
+            await expect(
+              handle.exec(
+                `'${process.execPath}' -e 'console.log("ready"); setTimeout(() => {}, 5000)'`,
+                {
+                  signal: abort.signal,
+                  onLine: () => abort.abort(new Error("reaping probe")),
+                },
+              ),
+            ).rejects.toThrow("reaping probe");
+          } finally {
+            await handle.close();
+          }
+        }),
+      );
+      expect(outcomes.filter((result) => result.status === "rejected")).toEqual(
+        [],
+      );
+    }
+  },
+  15000,
+);
+
 itPosix.each(["abort", "close", "parent-exits"])(
   "%s waits until the invocation's descendants stop writing",
   async (mode) => {
@@ -39,7 +73,11 @@ itPosix.each(["abort", "close", "parent-exits"])(
         onLine: (line) => {
           pids.push(Number(line));
           if (mode === "abort") abort.abort(new Error("test cancellation"));
-          else if (mode === "close") closing = handle.close();
+          else if (mode === "close") {
+            closing = handle.close();
+            // Observe a concurrent close rejection even if exec fails first.
+            void closing.catch(() => {});
+          }
         },
       });
       if (mode === "parent-exits") expect((await execution).exitCode).toBe(0);
