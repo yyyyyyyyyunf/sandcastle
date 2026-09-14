@@ -20,10 +20,11 @@ jobs:
           registry-url: https://registry.npmjs.org/
       - run: npm ci
       - run: npm run typecheck
+      # build before test: cli tests exec the compiled dist/main.js
+      - run: npm run build
       # git-heavy tests are slow under parallel load; the default 5s vitest
       # timeout is too tight on shared runners
       - run: npm test -- --testTimeout=20000
-      - run: npm run build
       - name: Verify build artifacts
         run: |
           set -e

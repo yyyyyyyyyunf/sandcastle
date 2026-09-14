@@ -50,8 +50,10 @@ const pendingChangesets = readdirSync(".changeset").filter(
   (f) => f.endsWith(".md") && f !== "README.md",
 );
 
-console.log("running preflight: typecheck + test");
+console.log("running preflight: typecheck + build + test");
 run("npm", ["run", "typecheck"]);
+// build before test: cli tests exec the compiled dist/main.js
+run("npm", ["run", "build"]);
 // git-heavy tests are slow under parallel load; give them room
 run("npm", ["test", "--", "--testTimeout=20000"]);
 
