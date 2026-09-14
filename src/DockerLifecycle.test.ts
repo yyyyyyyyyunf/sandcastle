@@ -11,7 +11,11 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { execFile } from "node:child_process";
-import { startContainer, buildImage } from "./DockerLifecycle.js";
+import {
+  startContainer,
+  buildImage,
+  removeContainer,
+} from "./DockerLifecycle.js";
 
 const mockExecFile = vi.mocked(execFile);
 
@@ -462,5 +466,28 @@ describe("startContainer", () => {
     const runArgs = runCall![1] as string[];
     const vIdx = runArgs.indexOf("-v");
     expect(runArgs[vIdx + 1]).toBe("/host/path:/sandbox/path:ro");
+  });
+});
+
+describe("removeContainer", () => {
+  it("stops with a 2s grace and force-removes, fitting the 7s shutdown budget", async () => {
+    mockExecFile.mockImplementation((_cmd, _args, _opts, cb: any) => {
+      cb(null, "", "");
+      return undefined as any;
+    });
+
+    await Effect.runPromise(removeContainer("ctr"));
+
+    const stopCall = mockExecFile.mock.calls.find(
+      ([, args]) => Array.isArray(args) && args[0] === "stop",
+    );
+    expect(stopCall).toBeDefined();
+    expect(stopCall![1]).toEqual(["stop", "-t", "2", "ctr"]);
+
+    const rmCall = mockExecFile.mock.calls.find(
+      ([, args]) => Array.isArray(args) && args[0] === "rm",
+    );
+    expect(rmCall).toBeDefined();
+    expect(rmCall![1]).toEqual(["rm", "-f", "ctr"]);
   });
 });

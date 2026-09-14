@@ -177,10 +177,14 @@ export const removeContainer = (
   containerName: string,
 ): Effect.Effect<void, DockerError> =>
   Effect.gen(function* () {
-    // Stop container (ignore errors if already stopped)
-    yield* Effect.ignore(dockerExec(["stop", containerName]));
-    // Remove container (ignore errors if not found)
-    yield* Effect.ignore(dockerExec(["rm", containerName]));
+    // Stop container with a 2s SIGTERM grace (ignore errors if already
+    // stopped). Docker's default 10s grace exceeds the 7s bounded sandbox
+    // shutdown budget, so containers whose PID 1 ignores SIGTERM (e.g.
+    // exec-form `sleep infinity`) must be SIGKILLed sooner.
+    yield* Effect.ignore(dockerExec(["stop", "-t", "2", containerName]));
+    // Remove container, forcing in case it is still running
+    // (ignore errors if not found)
+    yield* Effect.ignore(dockerExec(["rm", "-f", containerName]));
   });
 
 /**
