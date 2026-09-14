@@ -1,37 +1,49 @@
 name: Release
 
 on:
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+permissions:
+  contents: read
+  id-token: write # required for npm publish --provenance
 
 jobs:
-  release:
-    name: Release
+  publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 24
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Create Release Pull Request or Publish to npm
-        uses: changesets/action@v1
-        with:
-          publish: npx changeset publish
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org/
+      - run: npm ci
+      - run: npm run typecheck
+      # git-heavy tests are slow under parallel load; the default 5s vitest
+      # timeout is too tight on shared runners
+      - run: npm test -- --testTimeout=20000
+      - run: npm run build
+      - name: Verify build artifacts
+        run: |
+          set -e
+          for f in \
+            dist/index.js dist/index.d.ts dist/main.js \
+            dist/sandboxes/docker.js dist/sandboxes/docker.d.ts \
+            dist/sandboxes/podman.js dist/sandboxes/podman.d.ts \
+            dist/sandboxes/vercel.js dist/sandboxes/vercel.d.ts \
+            dist/sandboxes/daytona.js dist/sandboxes/daytona.d.ts \
+            dist/sandboxes/no-sandbox.js dist/sandboxes/no-sandbox.d.ts \
+            dist/templates; do
+            [ -e "$f" ] || { echo "::error file=$f::missing"; exit 1; }
+          done
+      - name: Check tag matches package version
+        run: |
+          set -e
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          [ "$TAG_VERSION" = "$PKG_VERSION" ] || { echo "::error::tag/version mismatch"; exit 1; }
+      - name: Publish to npm
+        run: npm publish --provenance
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}

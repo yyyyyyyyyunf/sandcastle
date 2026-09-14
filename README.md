@@ -1555,4 +1555,10 @@ MIT
 
 ## Publishing this fork
 
-The release workflow runs only when manually dispatched. To publish locally after authenticating with npm and obtaining access to the `fly4ai` organization, run `npm ci`, `npm run typecheck`, `npm run build`, `npm test`, then `npm run release`. The 0.13.0 release is already versioned; subsequent releases use `npx changeset version` first. `publishConfig` selects the public npm registry and public access. Push the resulting Changesets release tag after a successful publication.
+Releases are tag-triggered: pushing a `v*` tag runs the Release workflow (`.github/workflows/release.yml`), which type-checks, tests, builds, verifies the tag matches `package.json`, and publishes to npmjs.org with provenance. npm auth lives in the `NPM_SECRET` repository secret (an npmjs.org automation token for the `fly4ai` organization); `publishConfig` selects the public registry and public access.
+
+1. Add a changeset for every user-facing change (`npx changeset`) and commit it.
+2. Run `npm run release`. It requires a clean worktree on `main`, runs the preflight gates (typecheck + test), consumes pending changesets via `changeset version`, commits the version bump (`chore: version fly4ai sandcastle X.Y.Z`), and creates the `vX.Y.Z` tag. With no pending changesets it tags the current version as-is.
+3. Re-run with `--push` (`npm run release -- --push`) or push manually — `git push origin main && git push origin vX.Y.Z` — to trigger the publish.
+
+If the publish job fails (e.g. expired token), fix the cause and re-run the failed job from the Actions tab; the tag stays valid because the workflow checks it against `package.json`.
